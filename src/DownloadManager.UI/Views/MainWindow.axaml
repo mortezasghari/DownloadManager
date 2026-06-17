@@ -1,0 +1,22 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="clr-namespace:DownloadManager.UI.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="320"
+        x:Class="DownloadManager.UI.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="{Binding Title}"
+        Width="600" Height="320"
+        WindowStartupLocation="CenterScreen">
+
+  <StackPanel Margin="32" Spacing="16" VerticalAlignment="Center">
+    <TextBlock Text="{Binding Title}"
+               FontSize="28" FontWeight="SemiBold" />
+    <TextBlock Text="{Binding Greeting}"
+               FontSize="16" Opacity="0.9" />
+    <TextBlock Text="{Binding RuntimeInfo}"
+               FontSize="13" Opacity="0.7" TextWrapping="Wrap" />
+  </StackPanel>
+
+</Window>

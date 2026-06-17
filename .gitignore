@@ -4,3 +4,8 @@ obj/
 riderModule.iml
 /_ReSharper.Caches/
 .idea/
+
+# Build / publish output
+artifacts/
+publish/
+*.user

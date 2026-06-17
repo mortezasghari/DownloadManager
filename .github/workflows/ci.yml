@@ -1,0 +1,68 @@
+name: CI
+
+# Spec §14: AOT publish on all RIDs is a CI gate on every phase.
+# A phase is not "done" until build is clean, tests pass, and
+# `dotnet publish /p:PublishAot=true` succeeds and smoke-runs on every RID.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build-test-publish:
+    name: ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,     rid: linux-x64 }
+          - { os: ubuntu-24.04-arm,  rid: linux-arm64 }
+          - { os: windows-latest,    rid: win-x64 }
+          - { os: macos-latest,      rid: osx-arm64 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # Native AOT on Linux links through clang; install the toolchain explicitly
+      # so the gate is reproducible regardless of the runner image baseline.
+      - name: Install Linux AOT toolchain
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Restore
+        run: dotnet restore DownloadManager.slnx
+
+      - name: Build (warnings = errors)
+        run: dotnet build DownloadManager.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test DownloadManager.slnx -c Release --no-build
+
+      - name: Publish Native AOT
+        run: >
+          dotnet publish src/DownloadManager.UI/DownloadManager.UI.csproj
+          -c Release -r ${{ matrix.rid }}
+          -o artifacts/publish/${{ matrix.rid }}
+
+      - name: Smoke-run the native binary (Linux, headless)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get install -y xvfb
+          timeout 15 xvfb-run -a ./artifacts/publish/${{ matrix.rid }}/DownloadManager.UI &
+          PID=$!
+          sleep 8
+          if kill -0 $PID 2>/dev/null; then echo "launched OK"; kill $PID; else echo "exited early"; exit 1; fi
+
+      - name: Upload native image
+        uses: actions/upload-artifact@v4
+        with:
+          name: DownloadManager-${{ matrix.rid }}
+          path: artifacts/publish/${{ matrix.rid }}

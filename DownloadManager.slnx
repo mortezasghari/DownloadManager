@@ -1,1 +1,8 @@
-<Solution />
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DownloadManager.Core/DownloadManager.Core.csproj" />
+    <Project Path="src/DownloadManager.Persistence/DownloadManager.Persistence.csproj" />
+    <Project Path="src/DownloadManager.Tests/DownloadManager.Tests.csproj" />
+    <Project Path="src/DownloadManager.UI/DownloadManager.UI.csproj" />
+  </Folder>
+</Solution>
