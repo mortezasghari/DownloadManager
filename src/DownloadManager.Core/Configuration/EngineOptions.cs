@@ -21,4 +21,19 @@ public sealed record EngineOptions
     /// never aborted the way a global <c>HttpClient.Timeout</c> would (spec §3).
     /// </summary>
     public TimeSpan PerAttemptTimeout { get; init; } = TimeSpan.FromSeconds(100);
+
+    /// <summary>
+    /// Upper bound on segments per download. The requested count is clamped to <c>[1, this]</c>
+    /// (ADR-0007). Segments only happen when the probe confirmed real <c>206</c> range support.
+    /// </summary>
+    public int MaxSegmentsPerDownload { get; init; } = 16;
+
+    /// <summary>
+    /// Files smaller than this are downloaded as a single stream regardless of the requested segment
+    /// count — splitting tiny files just adds round-trips and fsyncs for no throughput gain (ADR-0007).
+    /// </summary>
+    public long SmallFileThresholdBytes { get; init; } = 8L * 1024 * 1024;
+
+    /// <summary>Maximum segments downloaded in parallel within one download (spec §8).</summary>
+    public int MaxSegmentConcurrency { get; init; } = 8;
 }

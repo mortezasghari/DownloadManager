@@ -1,5 +1,6 @@
 using DownloadManager.Core.Abstractions;
 using DownloadManager.Core.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Win32.SafeHandles;
 
 namespace DownloadManager.Persistence.Io;
@@ -27,8 +28,23 @@ public sealed class TargetFile(SafeFileHandle handle) : ITargetFile
     }
 }
 
-public sealed class TargetFileFactory : ITargetFileFactory
+public sealed partial class TargetFileFactory : ITargetFileFactory
 {
+    private readonly ILogger<TargetFileFactory> _logger;
+    private readonly Func<SafeFileHandle, long, bool> _tryAllocateFull;
+
+    public TargetFileFactory(ILogger<TargetFileFactory> logger)
+        : this(logger, NativePreallocator.TryAllocateFull)
+    {
+    }
+
+    // Test seam: lets a unit test force the native Full allocation to "fail" and exercise the fallback.
+    internal TargetFileFactory(ILogger<TargetFileFactory> logger, Func<SafeFileHandle, long, bool> tryAllocateFull)
+    {
+        _logger = logger;
+        _tryAllocateFull = tryAllocateFull;
+    }
+
     public ITargetFile Open(string path, long expectedSize, PreallocationMode mode)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
@@ -56,7 +72,13 @@ public sealed class TargetFileFactory : ITargetFileFactory
         return new TargetFile(handle);
     }
 
-    private static void Preallocate(SafeFileHandle handle, long expectedSize, PreallocationMode mode)
+    /// <summary>
+    /// Reserves space for the target. The layout + size are already persisted to <c>.dlmeta</c> before
+    /// this runs, so recovery knows the intended size regardless of how allocation goes. On failure the
+    /// mode degrades Full → Sparse → None with a logged warning; preallocation never aborts the
+    /// download (spec §5, ADR-0006).
+    /// </summary>
+    private void Preallocate(SafeFileHandle handle, long expectedSize, PreallocationMode mode)
     {
         if (mode == PreallocationMode.None || expectedSize <= 0)
         {
@@ -69,10 +91,49 @@ public sealed class TargetFileFactory : ITargetFileFactory
             return;
         }
 
-        // Phase 1: set the logical length with a single end-byte write (sparse on NTFS/ext4/APFS).
-        // True up-front block reservation (posix_fallocate / fcntl(F_PREALLOCATE) / FILE_ALLOCATION_INFO)
-        // for PreallocationMode.Full lands in Phase 2 — see ADR-0004.
-        Span<byte> oneByte = stackalloc byte[1];
-        RandomAccess.Write(handle, oneByte, expectedSize - 1);
+        if (mode == PreallocationMode.Full)
+        {
+            if (_tryAllocateFull(handle, expectedSize))
+            {
+                return;
+            }
+
+            LogFullFailed(expectedSize);
+            mode = PreallocationMode.Sparse;
+        }
+
+        if (mode == PreallocationMode.Sparse)
+        {
+            if (TrySetLength(handle, expectedSize))
+            {
+                return;
+            }
+
+            LogSparseFailed(expectedSize);
+            // Falls through to None: positioned writes will extend the file as data arrives.
+        }
     }
+
+    /// <summary>Sets the logical length via a single end-byte write (sparse on NTFS/ext4/APFS).</summary>
+    private static bool TrySetLength(SafeFileHandle handle, long size)
+    {
+        try
+        {
+            Span<byte> oneByte = stackalloc byte[1];
+            RandomAccess.Write(handle, oneByte, size - 1);
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
+
+    [LoggerMessage(Level = LogLevel.Warning,
+        Message = "Full preallocation of {Size} bytes failed (unsupported filesystem or no space); falling back to sparse.")]
+    private partial void LogFullFailed(long size);
+
+    [LoggerMessage(Level = LogLevel.Warning,
+        Message = "Sparse preallocation of {Size} bytes failed; continuing with no preallocation.")]
+    private partial void LogSparseFailed(long size);
 }

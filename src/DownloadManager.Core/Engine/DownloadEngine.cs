@@ -92,7 +92,7 @@ public sealed partial class DownloadEngine(
         SegmentRange[] segments;
         if (probe.TotalSize > 0)
         {
-            var segmentCount = probe.AcceptsRanges ? Math.Max(1, request.SegmentCount) : 1;
+            var segmentCount = ChooseSegmentCount(probe.TotalSize, probe.AcceptsRanges, request.SegmentCount);
             segments = SegmentLayout.Split(probe.TotalSize, segmentCount).Segments.ToArray();
         }
         else
@@ -141,21 +141,21 @@ public sealed partial class DownloadEngine(
 
             progress?.Report(aggregator.Snapshot());
 
-            // Phase 1 runs segments sequentially; Phase 2 parallelizes this loop. The per-segment
-            // logic is identical, so recovery and durability generalize without a second code path.
+            // Only segments that aren't already complete need work (mixed-state recovery: some done,
+            // some partial, some not started). Each resumes from its own offset with If-Range.
+            var pending = new List<(int Id, SegmentRange Segment, long From)>();
             for (var segmentId = 0; segmentId < layout.Count; segmentId++)
             {
                 var segment = layout[segmentId];
                 var from = ClampStart(recovered, segmentId, segment);
-                if (from > segment.EndInclusive)
+                if (from <= segment.EndInclusive)
                 {
-                    continue; // already complete
+                    pending.Add((segmentId, segment, from));
                 }
-
-                await DownloadSegmentAsync(
-                    request.Id, segmentId, segment, from, metadata, target, session.Log, aggregator, progress, ct)
-                    .ConfigureAwait(false);
             }
+
+            await RunSegmentsAsync(request.Id, pending, metadata, target, session.Log, aggregator, progress, ct)
+                .ConfigureAwait(false);
 
             completed = aggregator.Snapshot().CompletedBytes;
         }
@@ -170,6 +170,74 @@ public sealed partial class DownloadEngine(
         _progressLogStore.Delete(request.TargetPath);
         LogCompleted(request.Id, completed);
         return DownloadOutcome.Completed(completed);
+    }
+
+    /// <summary>
+    /// Runs the pending segments in parallel, bounded by <c>MaxSegmentConcurrency</c>. On the first
+    /// real failure all siblings are cancelled (no point burning bandwidth) and the originating
+    /// <see cref="DownloadException"/> is surfaced; on user cancellation the cancellation propagates.
+    /// Durable state stays consistent regardless because each segment obeys the §6c ordering.
+    /// </summary>
+    private async Task RunSegmentsAsync(
+        DownloadId id, IReadOnlyList<(int Id, SegmentRange Segment, long From)> pending, DownloadMetadata metadata,
+        ITargetFile target, IProgressLog log, ProgressAggregator aggregator,
+        IProgress<DownloadProgress>? progress, CancellationToken ct)
+    {
+        if (pending.Count == 0)
+        {
+            return;
+        }
+
+        var concurrency = Math.Clamp(_engineOptions.MaxSegmentConcurrency, 1, pending.Count);
+        using var gate = new SemaphoreSlim(concurrency);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+        async Task RunOneAsync((int Id, SegmentRange Segment, long From) item)
+        {
+            await gate.WaitAsync(linked.Token).ConfigureAwait(false);
+            try
+            {
+                await DownloadSegmentAsync(
+                    id, item.Id, item.Segment, item.From, metadata, target, log, aggregator, progress, linked.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                linked.Cancel(); // stop the siblings on a genuine failure
+                throw;
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        var tasks = new Task[pending.Count];
+        for (var i = 0; i < pending.Count; i++)
+        {
+            tasks[i] = RunOneAsync(pending[i]);
+        }
+
+        try
+        {
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+        catch
+        {
+            // A user cancellation wins; otherwise surface the originating download failure rather than
+            // a sibling's induced cancellation.
+            ct.ThrowIfCancellationRequested();
+            var failure = tasks
+                .Where(t => t.IsFaulted)
+                .Select(t => t.Exception!.GetBaseException())
+                .FirstOrDefault(e => e is DownloadException);
+            if (failure is not null)
+            {
+                throw failure;
+            }
+
+            throw;
+        }
     }
 
     private async Task DownloadSegmentAsync(
@@ -409,6 +477,22 @@ public sealed partial class DownloadEngine(
         target.FlushToDisk();
         log.Append(new SegmentCheckpoint(segmentId, offset));
         log.FlushToDisk();
+    }
+
+    /// <summary>
+    /// Picks the effective segment count: 1 unless the probe confirmed real <c>206</c> range support
+    /// and the file is at least the small-file threshold, then the requested count clamped to
+    /// <c>[1, MaxSegmentsPerDownload]</c> (ADR-0007). <see cref="SegmentLayout.Split"/> further caps it
+    /// so no zero-length segment is produced.
+    /// </summary>
+    private int ChooseSegmentCount(long totalSize, bool acceptsRanges, int requested)
+    {
+        if (!acceptsRanges || totalSize < _engineOptions.SmallFileThresholdBytes)
+        {
+            return 1;
+        }
+
+        return Math.Clamp(requested, 1, _engineOptions.MaxSegmentsPerDownload);
     }
 
     private static long ClampStart(IReadOnlyDictionary<int, long> recovered, int segmentId, SegmentRange segment)

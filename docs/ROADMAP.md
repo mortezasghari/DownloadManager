@@ -10,40 +10,35 @@ recovery correctness — are already complete.
 |---|---|---|
 | **0 — AOT spike** | Solution, CPM, 4 projects, multi-RID AOT gate | ✅ Done |
 | **1 — Durability-first single-stream** | Engine (1-segment), durable persistence, crash-safe recovery, `If-Range` resume | ✅ Done |
-| **2 — Segmentation** | N parallel segments, range probing, native preallocation | ⬜ Not started |
-| **3 — Scheduler & control** | `Channels` queue, concurrency, pause/resume/cancel, retry+backoff | ⬜ Not started |
+| **2 — Segmentation** | N parallel segments, range probing, native preallocation | ✅ Done |
+| **3 — Scheduler & control** | `Channels` queue, concurrency, pause/resume/cancel, retry+backoff | ⬜ Not started (next) |
 | **4 — Ingestion & network breadth** | URL import, auth/cookies/proxy, encoding, checksum | 🟡 ~20% (proxy + encoding done) |
 | **5 — Polish & tuning** | Real UI, perf measurement, log completeness | 🟡 ~10% (Phase 0 shell only) |
 
-**Roughly 40% of total effort complete.** Remaining phases are mostly breadth, not depth.
+**Roughly 55% of total effort complete.** Remaining phases are mostly breadth, not depth.
 
 ## Done (verified)
 
-- 42 tests passing; build clean (0 warnings); AOT publishes to a native ELF on
-  `linux-x64` with 0 IL/trim warnings. CI gate wired for all 4 RIDs.
-- The engine is already segment-shaped — `SegmentLayout`, per-segment recovery,
-  and the §6c durability ordering all generalize to N segments. Phase 2
-  parallelizes an existing loop rather than rewriting.
-- ADRs 0001–0005 recorded.
+- 53 tests passing; build clean (0 warnings); AOT publishes to a native ELF on
+  `linux-x64` with 0 IL/trim warnings (engine + native P/Invokes rooted via the
+  UI composition root, so the publish actually validates them). CI gate covers
+  all 4 RIDs.
+- **Phase 2**: multi-segment downloads run in parallel (bounded by
+  `MaxSegmentConcurrency`), segmenting only on confirmed `206` and above the
+  small-file threshold, with the count clamped to `[1,16]`. Native full
+  preallocation (`posix_fallocate` / `fcntl(F_PREALLOCATE)` / `FILE_ALLOCATION_INFO`)
+  with a Full→Sparse→None fallback that never aborts the download. Mixed-state
+  recovery resumes only incomplete segments, each with `If-Range`. ADR-0006/0007.
+- The engine was already segment-shaped, so recovery and the §6c durability
+  ordering generalized without a second code path.
+- ADRs 0001–0007 recorded.
 
 ## Next steps
 
-### ▶ Phase 2 — Segmentation (recommended next)
+### ▶ Phase 3 — Scheduler & control (next)
 
-1. Enable multi-segment in `ResolveMetadata` when range support is confirmed —
-   honor `request.SegmentCount`.
-2. Parallelize the segment loop (`Task.WhenAll`, bounded by per-download
-   concurrency); the shared `ITargetFile` / `IProgressLog` are already thread-safe.
-3. Native `Full` preallocation (the one deferred Phase-1 piece): `posix_fallocate`
-   / `fcntl(F_PREALLOCATE)` / `FILE_ALLOCATION_INFO` via `LibraryImport`, behind
-   the existing `PreallocationMode`.
-4. Tests: parallel-segment completion, mixed recovery (some segments done),
-   preallocation per OS. → ADR-0006 (preallocation strategy).
-
-### Phase 3 — Scheduler & control
-
-1. `System.Threading.Channels` bounded queue; max-concurrent-downloads gate;
-   per-download segment concurrency.
+1. `System.Threading.Channels` bounded queue; max-concurrent-downloads gate.
+   (Per-download segment concurrency already exists via `MaxSegmentConcurrency`.)
 2. Operations: enqueue / pause / resume / cancel / retry via `CancellationToken`.
 3. Retry policy: exponential backoff + jitter (`TimeProvider`-driven), bounded
    attempts, honor `Retry-After`. The transient/permanent classifier

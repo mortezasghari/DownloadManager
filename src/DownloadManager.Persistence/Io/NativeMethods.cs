@@ -30,6 +30,18 @@ internal static partial class NativeMethods
     [LibraryImport("libc", SetLastError = true)]
     internal static partial int close(int fd);
 
+    /// <summary>Linux: reserve real disk blocks for <c>[offset, offset+len)</c>. Returns 0 or an errno (does not set errno).</summary>
+    [LibraryImport("libc")]
+    internal static partial int posix_fallocate(int fd, long offset, long len);
+
+    /// <summary>Set a file's length (used after macOS F_PREALLOCATE, which reserves blocks but doesn't move EOF).</summary>
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int ftruncate(int fd, long length);
+
+    /// <summary>macOS: <c>fcntl(fd, F_PREALLOCATE, &amp;fstore)</c> overload (variadic; pointer arg).</summary>
+    [LibraryImport("libc", SetLastError = true)]
+    internal static partial int fcntl(int fd, int cmd, ref FStore arg);
+
     // ---- Windows ----
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
@@ -40,6 +52,11 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool MoveFileExW(string lpExistingFileName, string lpNewFileName, uint dwFlags);
 
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetFileInformationByHandle(
+        SafeFileHandle hFile, int fileInformationClass, ref FileAllocationInfo fileInformation, uint dwBufferSize);
+
     // ---- Constants ----
 
     internal const int O_RDONLY = 0;
@@ -47,6 +64,33 @@ internal static partial class NativeMethods
     /// <summary>macOS <c>F_FULLFSYNC</c> command number.</summary>
     internal const int F_FULLFSYNC = 51;
 
+    /// <summary>macOS <c>F_PREALLOCATE</c> command number and flags.</summary>
+    internal const int F_PREALLOCATE = 42;
+    internal const uint F_ALLOCATECONTIG = 0x2;
+    internal const uint F_ALLOCATEALL = 0x4;
+    internal const int F_PEOFPOSMODE = 3;
+
     internal const uint MOVEFILE_REPLACE_EXISTING = 0x1;
     internal const uint MOVEFILE_WRITE_THROUGH = 0x8;
+
+    /// <summary>Windows <c>FILE_INFO_BY_HANDLE_CLASS.FileAllocationInfo</c>.</summary>
+    internal const int FileAllocationInfoClass = 5;
+}
+
+/// <summary>macOS <c>struct fstore</c> for <c>fcntl(F_PREALLOCATE)</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct FStore
+{
+    public uint fst_flags;
+    public int fst_posmode;
+    public long fst_offset;
+    public long fst_length;
+    public long fst_bytesalloc;
+}
+
+/// <summary>Windows <c>FILE_ALLOCATION_INFO</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct FileAllocationInfo
+{
+    public long AllocationSize;
 }

@@ -34,7 +34,7 @@ internal sealed class EngineHarness : IDisposable
 
     public FakeTimeProvider Time { get; } = new();
 
-    public EngineOptions EngineOptions { get; }
+    public EngineOptions EngineOptions { get; set; }
 
     public string TargetPath => Path.Combine(_directory, "download.bin");
 
@@ -49,7 +49,7 @@ internal sealed class EngineHarness : IDisposable
         return new DownloadEngine(
             prober,
             httpClient,
-            new TargetFileFactory(),
+            new TargetFileFactory(NullLogger<TargetFileFactory>.Instance),
             new BinaryProgressLogStore(new ProgressLogOptions(), NullLogger<BinaryProgressLogStore>.Instance),
             new JsonMetadataStore(NullLogger<JsonMetadataStore>.Instance),
             EngineOptions,
