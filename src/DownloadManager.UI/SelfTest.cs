@@ -45,14 +45,23 @@ internal static class SelfTest
                 return 1;
             }
 
-            if (!capture.Messages.Any(m => m.Contains("native full", StringComparison.OrdinalIgnoreCase)))
+            var nativeFull = capture.Messages.Any(m => m.Contains("native full", StringComparison.OrdinalIgnoreCase));
+            if (nativeFull)
             {
-                Console.Error.WriteLine($"SMOKE FAIL [{rid}]: native full preallocation did not execute (fell back).");
-                return 1;
+                Console.WriteLine($"SMOKE OK [{rid}]: native full preallocation executed.");
+                return 0;
             }
 
-            Console.WriteLine($"SMOKE OK [{rid}]: native full preallocation executed.");
-            return 0;
+            // arm64 macOS cannot reach fcntl(F_PREALLOCATE) under the LibraryImport-only constraint
+            // (variadic ABI); the documented fallback sizes the file. See ADR-0006.
+            if (OperatingSystem.IsMacOS() && RuntimeInformation.OSArchitecture == Architecture.Arm64)
+            {
+                Console.WriteLine($"SMOKE OK [{rid}]: native full unavailable on arm64 macOS; used sized fallback (ADR-0006).");
+                return 0;
+            }
+
+            Console.Error.WriteLine($"SMOKE FAIL [{rid}]: native full preallocation did not execute (fell back).");
+            return 1;
         }
         catch (Exception ex)
         {

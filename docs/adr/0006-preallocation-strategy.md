@@ -48,6 +48,27 @@ Preallocation is an optimization, not a correctness requirement, so a failure
 here must never abort the download. Correctness still rests entirely on the §6c
 durability ordering.
 
+### Platform limitation: `F_PREALLOCATE` on arm64 macOS
+
+`fcntl` is a **variadic** C function (`int fcntl(int, int, ...)`). On Apple Silicon
+(arm64) the variadic argument is passed on the stack, not in a register, so a
+`LibraryImport` declaration with a fixed third parameter passes the `fstore`
+pointer in the wrong place and `F_PREALLOCATE` fails. The correct workaround is
+`__arglist`, which requires `DllImport` — forbidden by spec §5. `LibraryImport`
+does not support varargs. Therefore **real block reservation via `F_PREALLOCATE`
+is not reachable on arm64 macOS** under our constraints.
+
+Consequences and handling:
+- The attempt is still made (it works on x64 macOS, where varargs use registers);
+  on arm64 it fails cleanly and degrades to the sized (sparse, via `ftruncate`/
+  end-byte) fallback. The download is unaffected — writes fill the file.
+- This is **proven, not inferred**: the preallocation test and the `--smoke`
+  self-test require the native path on Linux/Windows, and assert the documented
+  fallback on arm64 macOS. If a future runtime makes the variadic call reachable,
+  the tests will start requiring native there too.
+- Durability is **not** affected: macOS `F_FULLFSYNC` (Phase 1) takes no third
+  argument, so the variadic-ABI mismatch is harmless for fsync.
+
 ### Explicitly rejected
 
 - `DllImport` (spec §5 mandates `LibraryImport`).

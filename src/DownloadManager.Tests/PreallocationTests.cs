@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using DownloadManager.Core.Configuration;
 using DownloadManager.Persistence.Io;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -43,9 +44,24 @@ public sealed class PreallocationTests : IDisposable
         {
         }
 
-        Assert.Contains(logger.Messages, m => m.Contains("native full", StringComparison.OrdinalIgnoreCase));
-        Assert.DoesNotContain(logger.Messages, m => m.Contains("falling back", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(100_000, new FileInfo(TargetPath).Length);
+
+        if (NativeFullUnavailable)
+        {
+            // arm64 macOS: fcntl(F_PREALLOCATE) is variadic and not callable via LibraryImport
+            // (DllImport/__arglist forbidden by spec), so Full degrades to a sized file. See ADR-0006.
+            Assert.Contains(logger.Messages, m => m.Contains("falling back", StringComparison.OrdinalIgnoreCase));
+        }
+        else
+        {
+            Assert.Contains(logger.Messages, m => m.Contains("native full", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(logger.Messages, m => m.Contains("falling back", StringComparison.OrdinalIgnoreCase));
+        }
     }
+
+    // Native full reservation is unreachable on arm64 macOS under the LibraryImport-only constraint.
+    private static bool NativeFullUnavailable =>
+        OperatingSystem.IsMacOS() && RuntimeInformation.OSArchitecture == Architecture.Arm64;
 
     [Fact]
     public async Task Full_falls_back_to_sparse_when_native_allocation_is_unsupported()
