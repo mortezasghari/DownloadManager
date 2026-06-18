@@ -24,10 +24,10 @@ jobs:
           - { os: macos-latest,      rid: osx-arm64 }
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
 
@@ -76,7 +76,7 @@ jobs:
           if kill -0 $PID 2>/dev/null; then echo "launched OK"; kill $PID; else echo "exited early"; exit 1; fi
 
       - name: Upload native image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: DownloadManager-${{ matrix.rid }}
           path: artifacts/publish/${{ matrix.rid }}
