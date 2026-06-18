@@ -28,23 +28,30 @@ internal sealed class FakeContentServer
     /// <summary>Offset added to the reported <c>Content-Range</c> start to forge a mismatch.</summary>
     public long ReportedFromDelta { get; set; }
 
+    private readonly Lock _gate = new();
+
     public List<(HttpMethod Method, long? RangeFrom, long? RangeTo, string? IfRange)> Requests { get; } = [];
 
+    // Parallel segments (Phase 2) call this concurrently, so request capture and response building
+    // are serialized: List<T> is not thread-safe and a lost Add would skew assertions.
     public HttpResponseMessage Handle(HttpRequestMessage request)
     {
-        var range = request.Headers.Range?.Ranges.FirstOrDefault();
-        var ifRange = request.Headers.NonValidated.TryGetValues("If-Range", out var values)
-            ? values.FirstOrDefault()
-            : null;
+        lock (_gate)
+        {
+            var range = request.Headers.Range?.Ranges.FirstOrDefault();
+            var ifRange = request.Headers.NonValidated.TryGetValues("If-Range", out var values)
+                ? values.FirstOrDefault()
+                : null;
 
-        Requests.Add((request.Method, range?.From, range?.To, ifRange));
+            Requests.Add((request.Method, range?.From, range?.To, ifRange));
 
-        var preconditionFailed = ifRange is not null && !IfRangeMatches(ifRange);
-        var honourRange = SupportsRanges && range is not null && !preconditionFailed;
+            var preconditionFailed = ifRange is not null && !IfRangeMatches(ifRange);
+            var honourRange = SupportsRanges && range is not null && !preconditionFailed;
 
-        return honourRange
-            ? Partial(range!.From ?? 0, range.To ?? Content.Length - 1)
-            : Ok();
+            return honourRange
+                ? Partial(range!.From ?? 0, range.To ?? Content.Length - 1)
+                : Ok();
+        }
     }
 
     private HttpResponseMessage Partial(long from, long to)

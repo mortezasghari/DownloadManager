@@ -32,6 +32,22 @@ public sealed class PreallocationTests : IDisposable
     }
 
     [Fact]
+    public async Task Full_preallocation_actually_runs_the_native_path_on_this_os()
+    {
+        // Proves the platform's native reservation (posix_fallocate / F_PREALLOCATE /
+        // FILE_ALLOCATION_INFO) executed — not that the end state was merely reached via fallback.
+        var logger = new Fakes.CollectingLogger<TargetFileFactory>();
+        var factory = new TargetFileFactory(logger);
+
+        await using (factory.Open(TargetPath, 100_000, PreallocationMode.Full))
+        {
+        }
+
+        Assert.Contains(logger.Messages, m => m.Contains("native full", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(logger.Messages, m => m.Contains("falling back", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task Full_falls_back_to_sparse_when_native_allocation_is_unsupported()
     {
         // Native Full fails (simulating an unsupported FS / ENOSPC); the file must still reach size.

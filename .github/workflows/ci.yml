@@ -46,13 +46,27 @@ jobs:
       - name: Test
         run: dotnet test DownloadManager.slnx -c Release --no-build
 
-      - name: Publish Native AOT
-        run: >
-          dotnet publish src/DownloadManager.UI/DownloadManager.UI.csproj
-          -c Release -r ${{ matrix.rid }}
-          -o artifacts/publish/${{ matrix.rid }}
+      - name: Publish Native AOT (fail on any trim/IL warning)
+        shell: bash
+        run: |
+          set -o pipefail
+          dotnet publish src/DownloadManager.UI/DownloadManager.UI.csproj \
+            -c Release -r ${{ matrix.rid }} \
+            -o artifacts/publish/${{ matrix.rid }} 2>&1 | tee publish.log
+          if grep -nE ': warning |IL[0-9]{4}' publish.log; then
+            echo "::error::AOT publish emitted trim/IL warnings"; exit 1
+          fi
 
-      - name: Smoke-run the native binary (Linux, headless)
+      # Headless native self-test on EVERY RID: runs the published binary with --smoke (no display),
+      # which exercises and proves the platform's native preallocation P/Invoke executed.
+      - name: Self-test native binary (--smoke, all RIDs)
+        shell: bash
+        run: |
+          BIN="artifacts/publish/${{ matrix.rid }}/DownloadManager.UI"
+          [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          "$BIN" --smoke
+
+      - name: GUI smoke-launch (Linux, headless via xvfb)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get install -y xvfb

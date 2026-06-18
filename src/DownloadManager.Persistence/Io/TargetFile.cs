@@ -95,6 +95,7 @@ public sealed partial class TargetFileFactory : ITargetFileFactory
         {
             if (_tryAllocateFull(handle, expectedSize))
             {
+                LogNativeFull(expectedSize);
                 return;
             }
 
@@ -128,6 +129,10 @@ public sealed partial class TargetFileFactory : ITargetFileFactory
             return false;
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Information,
+        Message = "Preallocated {Size} bytes via native full reservation.")]
+    private partial void LogNativeFull(long size);
 
     [LoggerMessage(Level = LogLevel.Warning,
         Message = "Full preallocation of {Size} bytes failed (unsupported filesystem or no space); falling back to sparse.")]
