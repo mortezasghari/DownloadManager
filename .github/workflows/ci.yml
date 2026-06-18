@@ -21,6 +21,7 @@ jobs:
           - { os: ubuntu-latest,     rid: linux-x64 }
           - { os: ubuntu-24.04-arm,  rid: linux-arm64 }
           - { os: windows-latest,    rid: win-x64 }
+          - { os: macos-13,          rid: osx-x64 }   # macOS Intel: proves the F_PREALLOCATE x64 path
           - { os: macos-latest,      rid: osx-arm64 }
 
     steps:
@@ -57,6 +58,25 @@ jobs:
             echo "::error::AOT publish emitted trim/IL warnings"; exit 1
           fi
 
+      # Packaging tidy (Phase 5.6): separate native debug symbols into a distinct artifact (kept for
+      # symbolication, not shipped beside the binary) and drop any stray managed reference PDBs. The
+      # binary itself is already stripped (StripSymbols=true). Avalonia's unmanaged native deps
+      # (libSkiaSharp / libHarfBuzzSharp / libAvaloniaNative / av_libGLESv2) are prebuilt C/C++
+      # libraries with no static-link path, so they remain as required sidecars beside the binary.
+      - name: Separate debug symbols and drop stray sidecars
+        shell: bash
+        run: |
+          PUB="artifacts/publish/${{ matrix.rid }}"
+          SYM="artifacts/symbols/${{ matrix.rid }}"
+          mkdir -p "$SYM"
+          for s in "$PUB/DownloadManager.UI.dbg" "$PUB/DownloadManager.UI.pdb"; do
+            [ -f "$s" ] && mv "$s" "$SYM/"
+          done
+          [ -d "$PUB/DownloadManager.UI.dSYM" ] && mv "$PUB/DownloadManager.UI.dSYM" "$SYM/"
+          rm -f "$PUB"/DownloadManager.*.pdb   # belt-and-suspenders: managed reference PDBs
+          echo "== shipped bundle (${{ matrix.rid }}) =="; ls -la "$PUB"
+          echo "== separated symbols (${{ matrix.rid }}) =="; ls -la "$SYM"
+
       # Headless native self-test on EVERY RID: runs the published binary with --smoke (no display),
       # which exercises and proves the platform's native preallocation P/Invoke executed.
       - name: Self-test native binary (--smoke, all RIDs)
@@ -75,8 +95,14 @@ jobs:
           sleep 8
           if kill -0 $PID 2>/dev/null; then echo "launched OK"; kill $PID; else echo "exited early"; exit 1; fi
 
-      - name: Upload native image
+      - name: Upload native image (binary bundle, symbols separated out)
         uses: actions/upload-artifact@v7
         with:
           name: DownloadManager-${{ matrix.rid }}
           path: artifacts/publish/${{ matrix.rid }}
+
+      - name: Upload debug symbols (separate artifact)
+        uses: actions/upload-artifact@v7
+        with:
+          name: DownloadManager-${{ matrix.rid }}-symbols
+          path: artifacts/symbols/${{ matrix.rid }}
