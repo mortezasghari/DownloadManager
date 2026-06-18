@@ -166,39 +166,56 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
     /// while queued (the worker then skips it). Resets intents and creates a fresh run token.</summary>
     public bool TryBeginRun(out CancellationToken token)
     {
+        CancellationTokenSource? toDispose = null;
+        bool began;
         lock (_gate)
         {
             if (_status != DownloadStatus.Queued)
             {
                 token = default;
-                return false;
+                began = false;
             }
-
-            _pauseRequested = false;
-            _cancelRequested = false;
-            _needsCredentials = false;
-            TransitionTo(DownloadStatus.Running);
-            token = RecreateRunToken();
-            return true;
+            else
+            {
+                _pauseRequested = false;
+                _cancelRequested = false;
+                _needsCredentials = false;
+                TransitionTo(DownloadStatus.Running);
+                token = RecreateRunToken(out toDispose);
+                began = true;
+            }
         }
+
+        toDispose?.Dispose(); // dispose the superseded CTS outside _gate
+        return began;
     }
 
     public CancellationToken BeginBackoff()
     {
+        CancellationTokenSource? toDispose;
+        CancellationToken token;
         lock (_gate)
         {
             TransitionTo(DownloadStatus.Retrying);
-            return RecreateRunToken();
+            token = RecreateRunToken(out toDispose);
         }
+
+        toDispose?.Dispose();
+        return token;
     }
 
     public CancellationToken BeginRetryRun()
     {
+        CancellationTokenSource? toDispose;
+        CancellationToken token;
         lock (_gate)
         {
             TransitionTo(DownloadStatus.Running);
-            return RecreateRunToken();
+            token = RecreateRunToken(out toDispose);
         }
+
+        toDispose?.Dispose();
+        return token;
     }
 
     public void CompleteRun() => SetTerminal(DownloadStatus.Completed);
@@ -228,11 +245,14 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
 
     public void DisposeRunCts()
     {
+        CancellationTokenSource? toDispose;
         lock (_gate)
         {
-            _runCts?.Dispose();
+            toDispose = _runCts;
             _runCts = null;
         }
+
+        toDispose?.Dispose(); // dispose outside _gate (see SignalRunCancellation / ADR-0010)
     }
 
     public Task WaitForStatusAsync(Func<DownloadStatus, bool> predicate, CancellationToken cancellationToken = default)
@@ -256,12 +276,15 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
 
     public void Dispose()
     {
+        CancellationTokenSource? toDispose;
         lock (_gate)
         {
             _disposed = true;
-            _runCts?.Dispose();
+            toDispose = _runCts;
             _runCts = null;
         }
+
+        toDispose?.Dispose(); // dispose outside _gate
     }
 
     // ---- internals (all callers hold _gate) ----
@@ -299,9 +322,15 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
         }
     }
 
-    private CancellationToken RecreateRunToken()
+    /// <summary>
+    /// Swaps in a fresh run CTS and hands back the <paramref name="previous"/> one (without disposing it)
+    /// so the caller can dispose it <b>outside</b> <c>_gate</c> (ADR-0010). The superseded CTS is removed
+    /// from the field atomically under the lock, so no two callers ever capture the same reference — the
+    /// disposal is single-owner and cannot double-dispose or race a concurrent recreate.
+    /// </summary>
+    private CancellationToken RecreateRunToken(out CancellationTokenSource? previous)
     {
-        _runCts?.Dispose();
+        previous = _runCts;
         _runCts = CancellationTokenSource.CreateLinkedTokenSource(_shutdownToken);
         return _runCts.Token;
     }

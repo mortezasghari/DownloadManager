@@ -2,79 +2,117 @@ using DownloadManager.Core.Domain;
 using DownloadManager.Core.Scheduler;
 using Xunit;
 
-namespace DownloadManager.Tests
+namespace DownloadManager.Tests;
+
+/// <summary>
+/// Regression coverage for the control-plane CTS hazards (ADR-0010): no <c>CancellationTokenSource</c>
+/// operation runs while <c>_gate</c> is held, so neither a blocking token callback nor a concurrent
+/// dispose/recreate can stall or fault the control plane.
+/// </summary>
+public class DeadlockTests
 {
-    public class DeadlockTests
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
+
+    private static DownloadHandle RunningHandle(out CancellationToken token, CancellationToken shutdown = default)
     {
-        [Fact]
-        public async Task CancelBlocksWhenCallbackHoldsExternalLock()
-        {
-            var request = new DownloadRequest
+        var handle = new DownloadHandle(
+            new DownloadRequest
             {
                 Id = DownloadId.New(),
                 Url = new Uri("http://example/"),
-                TargetPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
-            };
+                TargetPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString()),
+            },
+            shutdown);
+        Assert.True(handle.TryBeginRun(out token));
+        return handle;
+    }
 
-            using var shutdown = new CancellationTokenSource();
-            var handle = new DownloadHandle(request, shutdown.Token);
+    [Fact]
+    public async Task Cancel_does_not_stall_when_a_token_callback_blocks_on_an_external_lock()
+    {
+        var handle = RunningHandle(out var token);
 
-            Assert.True(handle.TryBeginRun(out var token));
+        // A registered callback that blocks until released. Pre-fix, Cancel() ran this synchronously
+        // under _gate and stalled; post-fix the cancellation is armed on a pool thread, so Cancel()
+        // returns immediately and the callback blocks harmlessly off the control-plane lock.
+        using var callbackGate = new SemaphoreSlim(0, 1);
+        using var registration = token.Register(() => callbackGate.Wait());
 
-            var externalLock = new object();
-
-            // Callback attempts to acquire an external lock. If Cancel() invokes callbacks
-            // synchronously while the caller holds that lock, Cancel will block until the
-            // lock is released — reproducing the problematic blocking behaviour.
-            token.Register(() => { lock (externalLock) { /* no-op */ } });
-
-            Task cancelTask;
-            lock (externalLock)
-            {
-                // Start the cancel on a thread-pool thread while we hold the external lock.
-                cancelTask = Task.Run(() => handle.Cancel());
-
-                // Sleep while holding the external lock so the cancellation callback (which
-                // attempts to take the external lock) will block if Cancel invokes callbacks
-                // synchronously on the cancelling thread.
-                Thread.Sleep(200);
-
-                // The correct behavior is for Cancel() to NOT be blocked by callbacks that
-                // attempt to acquire unrelated external locks. Assert that Cancel completed
-                // promptly even while we hold the external lock. This assertion will FAIL
-                // with the current implementation and should pass once the bug is fixed.
-                Assert.True(cancelTask.IsCompleted, "Cancel should complete promptly even if callbacks block on external locks.");
-            }
-
-            // After releasing the external lock the cancellation should complete promptly.
-            var winner2 = await Task.WhenAny(cancelTask, Task.Delay(1000));
-            Assert.Equal(cancelTask, winner2);
-            Assert.True(cancelTask.IsCompleted, "Cancel did not complete after external lock was released.");
+        var cancelTask = Task.Run(() => handle.Cancel());
+        try
+        {
+            // The assertion: Cancel() completes promptly while the callback is still blocked.
+            // WaitAsync throws TimeoutException (failing the test) if Cancel() stalled under the lock.
+            await cancelTask.WaitAsync(Timeout);
         }
-
-        [Fact]
-        public async Task CancelCompletesQuicklyWhenCallbacksAreFast()
+        catch (TimeoutException)
         {
-            var request = new DownloadRequest
-            {
-                Id = DownloadId.New(),
-                Url = new Uri("http://example/"),
-                TargetPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
-            };
+            Assert.Fail("Cancel() stalled while a token callback held an external lock — CTS op under _gate.");
+        }
+        finally
+        {
+            callbackGate.Release(); // let the pool-thread callback finish
+        }
+    }
 
-            using var shutdown = new CancellationTokenSource();
-            var handle = new DownloadHandle(request, shutdown.Token);
+    [Fact]
+    public async Task Cancel_completes_quickly_when_callbacks_are_fast()
+    {
+        var handle = RunningHandle(out var token);
+        using var registration = token.Register(() => { /* fast, non-blocking */ });
 
-            Assert.True(handle.TryBeginRun(out var token));
+        var cancelTask = Task.Run(() => handle.Cancel());
+        await cancelTask.WaitAsync(Timeout); // throws (fails) if it stalls
+    }
 
-            // Fast callback: should not block Cancel.
-            token.Register(() => { /* quick, non-blocking callback */ });
+    [Fact]
+    public async Task Dispose_concurrent_with_an_in_flight_cancel_does_not_stall_or_fault()
+    {
+        // Hammer the widened window: Cancel() arms cancellation on a pool thread while another thread
+        // disposes the same run CTS. No stall, no ObjectDisposedException must escape either call.
+        for (var i = 0; i < 200; i++)
+        {
+            var handle = RunningHandle(out var token);
+            using var registration = token.Register(() => Thread.SpinWait(50)); // keep a callback briefly in flight
 
-            var cancelTask = Task.Run(() => handle.Cancel());
-            var winner = await Task.WhenAny(cancelTask, Task.Delay(500));
-            Assert.Equal(cancelTask, winner);
+            var cancel = Task.Run(() => handle.Cancel());
+            var dispose = Task.Run(handle.DisposeRunCts);
+
+            await Task.WhenAll(cancel, dispose).WaitAsync(Timeout); // surfaces both stalls and exceptions
+            handle.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Full_dispose_concurrent_with_an_in_flight_cancel_does_not_stall_or_fault()
+    {
+        for (var i = 0; i < 200; i++)
+        {
+            var handle = RunningHandle(out var token);
+            using var registration = token.Register(() => Thread.SpinWait(50));
+
+            var cancel = Task.Run(() => handle.Cancel());
+            var dispose = Task.Run(handle.Dispose);
+
+            await Task.WhenAll(cancel, dispose).WaitAsync(Timeout);
+        }
+    }
+
+    [Fact]
+    public async Task Recreate_run_token_concurrent_with_an_in_flight_cancel_does_not_stall_or_fault()
+    {
+        // BeginBackoff() drives RecreateRunToken(), which disposes the superseded CTS — concurrently
+        // with a Cancel() that captured that same CTS. Exercises single-owner disposal + guarded signal.
+        for (var i = 0; i < 200; i++)
+        {
+            var handle = RunningHandle(out var token);
+            using var registration = token.Register(() => Thread.SpinWait(50));
+
+            var cancel = Task.Run(() => handle.Cancel());
+            var recreate = Task.Run(() => handle.BeginBackoff()); // Running -> Retrying, recreates the token
+
+            await Task.WhenAll(cancel, recreate).WaitAsync(Timeout);
+            handle.Dispose();
         }
     }
 }
-
-
