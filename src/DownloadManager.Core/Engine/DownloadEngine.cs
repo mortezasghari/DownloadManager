@@ -149,7 +149,7 @@ public sealed partial class DownloadEngine(
         DownloadRequest request, DownloadMetadata metadata, IProgress<DownloadProgress>? progress, CancellationToken ct)
     {
         var layout = SegmentLayout.FromPersisted(metadata.Segments, metadata.TotalSize);
-        var aggregator = new ProgressAggregator(metadata.TotalSize);
+        var aggregator = new ProgressAggregator(metadata.TotalSize, layout.Count);
 
         var target = _targetFileFactory.Open(request.TargetPath, metadata.TotalSize, request.Preallocation);
         var session = _progressLogStore.Open(request.TargetPath);

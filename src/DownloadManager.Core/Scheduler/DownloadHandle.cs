@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using DownloadManager.Core.Domain;
 
 namespace DownloadManager.Core.Scheduler;
@@ -50,16 +51,10 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
 
     public DownloadRequest Request { get; }
 
-    public DownloadStatus Status
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _status;
-            }
-        }
-    }
+    // UI-facing read: lock-free Volatile read of the int-backed status (Stage 1). All transitions
+    // still happen under _gate; this only removes the lock from the observational read path.
+    public DownloadStatus Status =>
+        (DownloadStatus)Volatile.Read(ref Unsafe.As<DownloadStatus, int>(ref _status));
 
     public bool PauseRequested
     {
@@ -279,7 +274,8 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
             throw new InvalidDownloadTransitionException(_status, $"transition to {to}");
         }
 
-        _status = to;
+        // Publish via Volatile so the lock-free Status reader observes the new value promptly.
+        Volatile.Write(ref Unsafe.As<DownloadStatus, int>(ref _status), (int)to);
         SignalWaiters();
     }
 
