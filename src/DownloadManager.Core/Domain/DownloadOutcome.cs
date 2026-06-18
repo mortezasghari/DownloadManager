@@ -17,12 +17,14 @@ public sealed record DownloadOutcome(
     long CompletedBytes,
     string? Error = null,
     bool IsTransient = false,
-    TimeSpan? RetryAfter = null)
+    TimeSpan? RetryAfter = null,
+    bool NeedsCredentials = false)
 {
     public static DownloadOutcome Completed(long bytes) => new(DownloadResultKind.Completed, bytes);
 
     public static DownloadOutcome Canceled(long bytes) => new(DownloadResultKind.Canceled, bytes);
 
-    public static DownloadOutcome Failed(long bytes, string error, bool isTransient, TimeSpan? retryAfter = null) =>
-        new(DownloadResultKind.Failed, bytes, error, isTransient, retryAfter);
+    public static DownloadOutcome Failed(
+        long bytes, string error, bool isTransient, TimeSpan? retryAfter = null, bool needsCredentials = false) =>
+        new(DownloadResultKind.Failed, bytes, error, isTransient, retryAfter, needsCredentials);
 }

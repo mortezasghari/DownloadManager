@@ -49,6 +49,7 @@ internal sealed class SchedulerHarness : IAsyncDisposable
             new TargetFileFactory(NullLogger<TargetFileFactory>.Instance),
             new BinaryProgressLogStore(new ProgressLogOptions(), NullLogger<BinaryProgressLogStore>.Instance),
             new JsonMetadataStore(NullLogger<JsonMetadataStore>.Instance),
+            new ChecksumVerifier(Time, NullLogger<ChecksumVerifier>.Instance),
             engineOptions,
             Time,
             NullLogger<DownloadEngine>.Instance);

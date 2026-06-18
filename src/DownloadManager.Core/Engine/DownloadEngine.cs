@@ -21,6 +21,7 @@ public sealed partial class DownloadEngine(
     ITargetFileFactory targetFileFactory,
     IProgressLogStore progressLogStore,
     IMetadataStore metadataStore,
+    ChecksumVerifier checksumVerifier,
     EngineOptions engineOptions,
     TimeProvider timeProvider,
     ILogger<DownloadEngine> logger) : IDownloadEngine
@@ -30,6 +31,7 @@ public sealed partial class DownloadEngine(
     private readonly ITargetFileFactory _targetFileFactory = targetFileFactory;
     private readonly IProgressLogStore _progressLogStore = progressLogStore;
     private readonly IMetadataStore _metadataStore = metadataStore;
+    private readonly ChecksumVerifier _checksumVerifier = checksumVerifier;
     private readonly EngineOptions _engineOptions = engineOptions;
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<DownloadEngine> _logger = logger;
@@ -39,12 +41,17 @@ public sealed partial class DownloadEngine(
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        // Credentials are bound to the request URL's origin; the authorizer strips them on any
+        // cross-host redirect (ADR-0011). One authorizer serves the probe, revalidation, and every
+        // segment/single-stream request.
+        var authorizer = new RequestAuthorizer(request.Credentials, request.Url);
+
         try
         {
-            var metadata = await ResolveMetadataAsync(request, cancellationToken).ConfigureAwait(false);
+            var metadata = await ResolveMetadataAsync(request, authorizer, cancellationToken).ConfigureAwait(false);
             return metadata.TotalSize > 0
-                ? await RunSegmentedAsync(request, metadata, progress, cancellationToken).ConfigureAwait(false)
-                : await RunUnknownSizeAsync(request, metadata, progress, cancellationToken).ConfigureAwait(false);
+                ? await RunSegmentedAsync(request, metadata, authorizer, progress, cancellationToken).ConfigureAwait(false)
+                : await RunUnknownSizeAsync(request, metadata, authorizer, progress, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -54,7 +61,8 @@ public sealed partial class DownloadEngine(
         catch (DownloadException ex)
         {
             LogFailed(request.Id, ex.IsTransient, ex.Message);
-            return DownloadOutcome.Failed(0, ex.Message, ex.IsTransient, ex.RetryAfter);
+            return DownloadOutcome.Failed(
+                0, ex.Message, ex.IsTransient, ex.RetryAfter, needsCredentials: ex is NeedsCredentialsException);
         }
     }
 
@@ -89,7 +97,8 @@ public sealed partial class DownloadEngine(
     /// validator cases discard prior state and restart, so the download paths below always operate on
     /// a validated resource (spec §6d/§7).
     /// </summary>
-    private async Task<DownloadMetadata> ResolveMetadataAsync(DownloadRequest request, CancellationToken ct)
+    private async Task<DownloadMetadata> ResolveMetadataAsync(
+        DownloadRequest request, RequestAuthorizer authorizer, CancellationToken ct)
     {
         var existing = await _metadataStore.TryLoadAsync(request.TargetPath, ct).ConfigureAwait(false);
         if (existing is not null)
@@ -97,7 +106,7 @@ public sealed partial class DownloadEngine(
             if (existing.TotalSize > 0)
             {
                 var revalidation = await _prober
-                    .RevalidateAsync(new Uri(existing.FinalUrl), existing.Validators, existing.TotalSize, ct)
+                    .RevalidateAsync(new Uri(existing.FinalUrl), existing.Validators, existing.TotalSize, authorizer, ct)
                     .ConfigureAwait(false);
 
                 if (revalidation.Unchanged)
@@ -112,7 +121,7 @@ public sealed partial class DownloadEngine(
             DiscardState(request.TargetPath);
         }
 
-        var probe = await _prober.ProbeAsync(request.Url, ct).ConfigureAwait(false);
+        var probe = await _prober.ProbeAsync(request.Url, authorizer, ct).ConfigureAwait(false);
 
         SegmentRange[] segments;
         if (probe.TotalSize > 0)
@@ -146,7 +155,8 @@ public sealed partial class DownloadEngine(
     }
 
     private async Task<DownloadOutcome> RunSegmentedAsync(
-        DownloadRequest request, DownloadMetadata metadata, IProgress<DownloadProgress>? progress, CancellationToken ct)
+        DownloadRequest request, DownloadMetadata metadata, RequestAuthorizer authorizer,
+        IProgress<DownloadProgress>? progress, CancellationToken ct)
     {
         var layout = SegmentLayout.FromPersisted(metadata.Segments, metadata.TotalSize);
         var aggregator = new ProgressAggregator(metadata.TotalSize, layout.Count);
@@ -179,7 +189,7 @@ public sealed partial class DownloadEngine(
                 }
             }
 
-            await RunSegmentsAsync(request.Id, pending, metadata, target, session.Log, aggregator, progress, ct)
+            await RunSegmentsAsync(request.Id, pending, metadata, authorizer, target, session.Log, aggregator, progress, ct)
                 .ConfigureAwait(false);
 
             completed = aggregator.Snapshot().CompletedBytes;
@@ -188,6 +198,12 @@ public sealed partial class DownloadEngine(
         {
             await session.DisposeAsync().ConfigureAwait(false);
             await target.DisposeAsync().ConfigureAwait(false);
+        }
+
+        // The bytes are on disk and durable; verify the checksum (if any) before declaring success.
+        if (await VerifyChecksumAsync(request, metadata, completed, progress, ct).ConfigureAwait(false) is { } mismatch)
+        {
+            return mismatch;
         }
 
         // Success: the target is complete and durable, so the sidecars are no longer needed.
@@ -205,7 +221,7 @@ public sealed partial class DownloadEngine(
     /// </summary>
     private async Task RunSegmentsAsync(
         DownloadId id, IReadOnlyList<(int Id, SegmentRange Segment, long From)> pending, DownloadMetadata metadata,
-        ITargetFile target, IProgressLog log, ProgressAggregator aggregator,
+        RequestAuthorizer authorizer, ITargetFile target, IProgressLog log, ProgressAggregator aggregator,
         IProgress<DownloadProgress>? progress, CancellationToken ct)
     {
         if (pending.Count == 0)
@@ -223,7 +239,7 @@ public sealed partial class DownloadEngine(
             try
             {
                 await DownloadSegmentAsync(
-                    id, item.Id, item.Segment, item.From, metadata, target, log, aggregator, progress, linked.Token)
+                    id, item.Id, item.Segment, item.From, metadata, authorizer, target, log, aggregator, progress, linked.Token)
                     .ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -267,7 +283,7 @@ public sealed partial class DownloadEngine(
 
     private async Task DownloadSegmentAsync(
         DownloadId id, int segmentId, SegmentRange segment, long from, DownloadMetadata metadata,
-        ITargetFile target, IProgressLog log, ProgressAggregator aggregator,
+        RequestAuthorizer authorizer, ITargetFile target, IProgressLog log, ProgressAggregator aggregator,
         IProgress<DownloadProgress>? progress, CancellationToken ct)
     {
         var writeOffset = from;
@@ -281,11 +297,31 @@ public sealed partial class DownloadEngine(
             request.Headers.TryAddWithoutValidation("If-Range", ifRange);
         }
 
+        if (isResume)
+        {
+            // Resume diagnostics: the offset we continue from and the validators we predicate on (§6d/§7).
+            LogSegmentResuming(id, segmentId, writeOffset, segment.Start, segment.EndInclusive,
+                metadata.ETag, metadata.LastModified);
+        }
+
+        // Credentials ride along only if the (possibly redirected) final URL is the credential origin.
+        authorizer.Authorize(request);
+
         using var timeoutCts = new CancellationTokenSource(_engineOptions.PerAttemptTimeout, _timeProvider);
         using var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
         using var response = await SendWithClassificationAsync(request, attempt.Token, ct).ConfigureAwait(false);
-        writeOffset = ValidateSegmentResponse(response, segment, writeOffset, metadata.TotalSize, isResume);
+        try
+        {
+            writeOffset = ValidateSegmentResponse(response, segment, writeOffset, metadata.TotalSize, isResume);
+        }
+        catch (ResourceChangedException ex)
+        {
+            // A corrupt/invalid resume must be fully diagnosable: id, segment, offsets, validators, status.
+            LogSegmentResumeRejected(id, segmentId, writeOffset, segment.Start, segment.EndInclusive,
+                metadata.TotalSize, (int)response.StatusCode, metadata.ETag, metadata.LastModified, ex.Message);
+            throw;
+        }
 
         var stream = await response.Content.ReadAsStreamAsync(attempt.Token).ConfigureAwait(false);
         var buffer = ArrayPool<byte>.Shared.Rent(_engineOptions.CopyBufferSize);
@@ -356,7 +392,9 @@ public sealed partial class DownloadEngine(
 
         if (writeOffset != segment.EndInclusive + 1)
         {
-            // The connection closed before the segment finished — transient, safe to resume later.
+            // The connection closed before the segment finished — transient, safe to resume later. Log
+            // the durable offset so a stalled/short resume is diagnosable.
+            LogSegmentShort(id, segmentId, writeOffset, segment.EndInclusive + 1);
             throw new TransientDownloadException(
                 $"Segment {segmentId} ended at {writeOffset}, expected {segment.EndInclusive + 1}.");
         }
@@ -365,7 +403,8 @@ public sealed partial class DownloadEngine(
     }
 
     private async Task<DownloadOutcome> RunUnknownSizeAsync(
-        DownloadRequest request, DownloadMetadata metadata, IProgress<DownloadProgress>? progress, CancellationToken ct)
+        DownloadRequest request, DownloadMetadata metadata, RequestAuthorizer authorizer,
+        IProgress<DownloadProgress>? progress, CancellationToken ct)
     {
         // No size and/or no range support => non-resumable single stream (spec §3). No progress log:
         // there is nothing safe to resume from, so each run starts at offset 0.
@@ -375,6 +414,7 @@ public sealed partial class DownloadEngine(
         {
             using var httpRequest = new HttpRequestMessage(HttpMethod.Get, new Uri(metadata.FinalUrl));
             httpRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
+            authorizer.Authorize(httpRequest);
 
             using var timeoutCts = new CancellationTokenSource(_engineOptions.PerAttemptTimeout, _timeProvider);
             using var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
@@ -428,10 +468,46 @@ public sealed partial class DownloadEngine(
             await target.DisposeAsync().ConfigureAwait(false);
         }
 
+        if (await VerifyChecksumAsync(request, metadata, written, progress, ct).ConfigureAwait(false) is { } mismatch)
+        {
+            return mismatch;
+        }
+
         _metadataStore.Delete(request.TargetPath);
         _progressLogStore.Delete(request.TargetPath);
         LogCompleted(request.Id, written);
         return DownloadOutcome.Completed(written);
+    }
+
+    /// <summary>
+    /// Verifies the completed file against <see cref="DownloadMetadata.ExpectedSha256"/> when one is set
+    /// (spec §4 / ADR-0012). Returns <c>null</c> when there is nothing to verify or the hash matches; on
+    /// a mismatch returns a non-transient <see cref="DownloadResultKind.Failed"/> outcome and leaves the
+    /// file and sidecars in place so the user can re-download — a mismatched file is never declared
+    /// Completed.
+    /// </summary>
+    private async Task<DownloadOutcome?> VerifyChecksumAsync(
+        DownloadRequest request, DownloadMetadata metadata, long completed,
+        IProgress<DownloadProgress>? progress, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(metadata.ExpectedSha256))
+        {
+            return null;
+        }
+
+        var result = await _checksumVerifier
+            .VerifyAsync(request.TargetPath, metadata.ExpectedSha256, _engineOptions.CopyBufferSize, progress, ct)
+            .ConfigureAwait(false);
+        if (result.Matched)
+        {
+            return null;
+        }
+
+        LogChecksumMismatch(request.Id, result.ExpectedHex, result.ActualHex);
+        return DownloadOutcome.Failed(
+            completed,
+            $"SHA-256 mismatch: expected {result.ExpectedHex}, computed {result.ActualHex}.",
+            isTransient: false);
     }
 
     private async Task<HttpResponseMessage> SendWithClassificationAsync(
@@ -562,4 +638,23 @@ public sealed partial class DownloadEngine(
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Download {Id} failed (transient={IsTransient}): {Reason}")]
     private partial void LogFailed(DownloadId id, bool isTransient, string reason);
+
+    [LoggerMessage(Level = LogLevel.Error,
+        Message = "Download {Id} SHA-256 mismatch (expected {Expected}, computed {Actual}); file and metadata retained.")]
+    private partial void LogChecksumMismatch(DownloadId id, string expected, string actual);
+
+    [LoggerMessage(Level = LogLevel.Debug,
+        Message = "Download {Id} segment {SegmentId} resuming from offset {From} (range {Start}-{End}), If-Range etag {ETag}, last-modified {LastModified}.")]
+    private partial void LogSegmentResuming(
+        DownloadId id, int segmentId, long from, long start, long end, string? eTag, DateTimeOffset? lastModified);
+
+    [LoggerMessage(Level = LogLevel.Warning,
+        Message = "Download {Id} segment {SegmentId} resume rejected at offset {From} (range {Start}-{End}, expected total {ExpectedTotal}, HTTP {Status}, etag {ETag}, last-modified {LastModified}): {Reason}")]
+    private partial void LogSegmentResumeRejected(
+        DownloadId id, int segmentId, long from, long start, long end, long expectedTotal, int status,
+        string? eTag, DateTimeOffset? lastModified, string reason);
+
+    [LoggerMessage(Level = LogLevel.Warning,
+        Message = "Download {Id} segment {SegmentId} ended short at durable offset {Offset}, expected {Expected}; resumable.")]
+    private partial void LogSegmentShort(DownloadId id, int segmentId, long offset, long expected);
 }

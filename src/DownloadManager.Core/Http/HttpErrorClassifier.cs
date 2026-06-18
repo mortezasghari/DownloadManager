@@ -19,11 +19,17 @@ internal static class HttpErrorClassifier
     {
         var code = (int)status;
 
-        // Clearly permanent: the resource is gone or we are not allowed to have it.
-        if (status is HttpStatusCode.NotFound          // 404
-            or HttpStatusCode.Gone                      // 410
-            or HttpStatusCode.Unauthorized              // 401
+        // Auth failures are their own category: not retryable, but fresh credentials may fix them, so
+        // they must not discard partial progress (ADR-0011).
+        if (status is HttpStatusCode.Unauthorized       // 401
             or HttpStatusCode.Forbidden)                // 403
+        {
+            return new NeedsCredentialsException($"HTTP {code} {status}.");
+        }
+
+        // Clearly permanent: the resource is gone.
+        if (status is HttpStatusCode.NotFound           // 404
+            or HttpStatusCode.Gone)                     // 410
         {
             return new PermanentDownloadException($"HTTP {code} {status}.");
         }

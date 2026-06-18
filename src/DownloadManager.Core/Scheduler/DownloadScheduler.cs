@@ -166,7 +166,8 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
         {
             while (true)
             {
-                var outcome = await _engine.RunAsync(handle.Request, progress: null, token).ConfigureAwait(false);
+                // The handle is the run's progress sink (lock-free counters surfaced to the UI, ADR-0010/0013).
+                var outcome = await _engine.RunAsync(handle.Request, handle, token).ConfigureAwait(false);
 
                 // 1. A real completion wins over any racing control op (the file is done, sidecars gone).
                 if (outcome.Kind == DownloadResultKind.Completed)
@@ -202,11 +203,13 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
                     return;
                 }
 
-                // 5. Failure: retry with backoff, or give up.
+                // 5. Failure: retry with backoff, or give up. A "needs credentials" (401/403) outcome is
+                // non-transient, so it lands here and terminates as Failed-with-reason — no retry-loop,
+                // and the partial download is retained (not discarded) so a re-auth can resume (ADR-0011).
                 var attempts = handle.IncrementAttempts();
                 if (!outcome.IsTransient || !_retryPolicy.ShouldRetry(attempts))
                 {
-                    handle.FailRun();
+                    handle.FailRun(outcome.NeedsCredentials);
                     LogFailed(handle.Id, attempts, outcome.Error ?? "(none)");
                     return;
                 }

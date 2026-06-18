@@ -9,7 +9,7 @@ namespace DownloadManager.Core.Scheduler;
 /// worker never race into an illegal state, a double-start, or a leaked token. Pause and cancel are
 /// <b>distinct intents</b> (separate flags), not the same signal.
 /// </summary>
-public sealed class DownloadHandle : IDownloadHandle, IDisposable
+public sealed class DownloadHandle : IDownloadHandle, IProgress<DownloadProgress>, IDisposable
 {
     private static readonly (DownloadStatus From, DownloadStatus To)[] LegalTransitions =
     [
@@ -37,9 +37,17 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
     private DownloadStatus _status = DownloadStatus.Queued;
     private bool _pauseRequested;
     private bool _cancelRequested;
+    private bool _needsCredentials;
     private int _attemptsMade;
     private CancellationTokenSource? _runCts;
     private bool _disposed;
+
+    // Lock-free progress, published by the engine via IProgress.Report and read by the UI. Each field
+    // is updated/read with Volatile; reports are low-frequency (per checkpoint), so there is no boxing
+    // and no contention worth a lock — at worst a reader sees one field a tick stale, harmless for display.
+    private long _completedBytes;
+    private long _totalBytes;
+    private int _phase; // DownloadPhase
 
     public DownloadHandle(DownloadRequest request, CancellationToken shutdownToken)
     {
@@ -71,12 +79,36 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
         get { lock (_gate) { return _attemptsMade; } }
     }
 
+    /// <summary>True when the download is Failed because the server demanded credentials (401/403) and the
+    /// supplied ones were missing/stale. A <i>reason</i> on the Failed state (ADR-0011), not a new state:
+    /// the partial download is retained and the user can re-supply credentials and retry.</summary>
+    public bool NeedsCredentials
+    {
+        get { lock (_gate) { return _needsCredentials; } }
+    }
+
+    // Lock-free progress read (no _gate): assembled from independently-Volatile fields.
+    public DownloadProgress Progress => new(
+        Volatile.Read(ref _completedBytes),
+        Volatile.Read(ref _totalBytes),
+        (DownloadPhase)Volatile.Read(ref _phase));
+
+    /// <summary>The engine reports progress here (the scheduler passes the handle as the run's
+    /// <see cref="IProgress{T}"/>). Called from segment worker threads; lock-free, display-only.</summary>
+    public void Report(DownloadProgress value)
+    {
+        Volatile.Write(ref _completedBytes, value.CompletedBytes);
+        Volatile.Write(ref _totalBytes, value.TotalBytes);
+        Volatile.Write(ref _phase, (int)value.Phase);
+    }
+
     // ---- Control operations (external) ----
 
     /// <summary>Pause: legal from Queued/Running/Retrying. Queued pauses directly; an active run is
     /// signalled and the worker completes the transition.</summary>
     public void Pause()
     {
+        CancellationTokenSource? toCancel = null;
         lock (_gate)
         {
             switch (_status)
@@ -86,12 +118,14 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
                     break;
                 case DownloadStatus.Running or DownloadStatus.Retrying:
                     _pauseRequested = true;
-                    _runCts?.Cancel();
+                    toCancel = _runCts; // cancel outside the lock (below)
                     break;
                 default:
                     throw new InvalidDownloadTransitionException(_status, "pause");
             }
         }
+
+        SignalRunCancellation(toCancel);
     }
 
     /// <summary>Resume: legal only from Paused. Moves to Queued; the scheduler re-enqueues.</summary>
@@ -112,6 +146,7 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
     /// Canceled (so the caller should discard state now); false if an active run was signalled to stop.</summary>
     public bool Cancel()
     {
+        CancellationTokenSource? toCancel = null;
         lock (_gate)
         {
             switch (_status)
@@ -121,12 +156,15 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
                     return true;
                 case DownloadStatus.Running or DownloadStatus.Retrying:
                     _cancelRequested = true;
-                    _runCts?.Cancel();
-                    return false;
+                    toCancel = _runCts; // cancel outside the lock (below)
+                    break;
                 default:
                     throw new InvalidDownloadTransitionException(_status, "cancel");
             }
         }
+
+        SignalRunCancellation(toCancel);
+        return false;
     }
 
     /// <summary>Manual retry: legal only from Failed. Resets the attempt budget; the scheduler re-enqueues.</summary>
@@ -150,43 +188,70 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
     /// while queued (the worker then skips it). Resets intents and creates a fresh run token.</summary>
     public bool TryBeginRun(out CancellationToken token)
     {
+        CancellationTokenSource? toDispose = null;
+        bool began;
         lock (_gate)
         {
             if (_status != DownloadStatus.Queued)
             {
                 token = default;
-                return false;
+                began = false;
             }
-
-            _pauseRequested = false;
-            _cancelRequested = false;
-            TransitionTo(DownloadStatus.Running);
-            token = RecreateRunToken();
-            return true;
+            else
+            {
+                _pauseRequested = false;
+                _cancelRequested = false;
+                _needsCredentials = false;
+                TransitionTo(DownloadStatus.Running);
+                token = RecreateRunToken(out toDispose);
+                began = true;
+            }
         }
+
+        toDispose?.Dispose(); // dispose the superseded CTS outside _gate
+        return began;
     }
 
     public CancellationToken BeginBackoff()
     {
+        CancellationTokenSource? toDispose;
+        CancellationToken token;
         lock (_gate)
         {
             TransitionTo(DownloadStatus.Retrying);
-            return RecreateRunToken();
+            token = RecreateRunToken(out toDispose);
         }
+
+        toDispose?.Dispose();
+        return token;
     }
 
     public CancellationToken BeginRetryRun()
     {
+        CancellationTokenSource? toDispose;
+        CancellationToken token;
         lock (_gate)
         {
             TransitionTo(DownloadStatus.Running);
-            return RecreateRunToken();
+            token = RecreateRunToken(out toDispose);
         }
+
+        toDispose?.Dispose();
+        return token;
     }
 
     public void CompleteRun() => SetTerminal(DownloadStatus.Completed);
 
-    public void FailRun() => SetTerminal(DownloadStatus.Failed);
+    /// <summary>Terminal Failed. <paramref name="needsCredentials"/> records the 401/403 "needs credentials"
+    /// reason (ADR-0011) as an attribute of the Failed state, not a separate state.</summary>
+    public void FailRun(bool needsCredentials = false)
+    {
+        lock (_gate)
+        {
+            _needsCredentials = needsCredentials;
+            TransitionTo(DownloadStatus.Failed);
+        }
+    }
 
     public void MarkPaused() => SetTerminal(DownloadStatus.Paused);
 
@@ -202,11 +267,14 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
 
     public void DisposeRunCts()
     {
+        CancellationTokenSource? toDispose;
         lock (_gate)
         {
-            _runCts?.Dispose();
+            toDispose = _runCts;
             _runCts = null;
         }
+
+        toDispose?.Dispose(); // dispose outside _gate (see SignalRunCancellation / ADR-0010)
     }
 
     public Task WaitForStatusAsync(Func<DownloadStatus, bool> predicate, CancellationToken cancellationToken = default)
@@ -230,12 +298,15 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
 
     public void Dispose()
     {
+        CancellationTokenSource? toDispose;
         lock (_gate)
         {
             _disposed = true;
-            _runCts?.Dispose();
+            toDispose = _runCts;
             _runCts = null;
         }
+
+        toDispose?.Dispose(); // dispose outside _gate
     }
 
     // ---- internals (all callers hold _gate) ----
@@ -248,9 +319,40 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
         }
     }
 
-    private CancellationToken RecreateRunToken()
+    /// <summary>
+    /// Triggers cancellation of the captured run CTS <b>outside</b> the <c>_gate</c> lock and without
+    /// running its registered callbacks on the caller's thread (ADR-0010). <c>CancellationTokenSource.Cancel()</c>
+    /// invokes callbacks synchronously, so calling it under <c>_gate</c> let a callback that re-enters the
+    /// handle — or blocks on any other lock — stall the whole control plane. Using <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/>
+    /// with <see cref="TimeSpan.Zero"/> arms the cancellation on a pool thread and returns immediately, so a
+    /// pathological callback can never block a pause/cancel. A disposed CTS (the run already ended) is benign.
+    /// </summary>
+    private static void SignalRunCancellation(CancellationTokenSource? cts)
     {
-        _runCts?.Dispose();
+        if (cts is null)
+        {
+            return;
+        }
+
+        try
+        {
+            cts.CancelAfter(TimeSpan.Zero);
+        }
+        catch (ObjectDisposedException)
+        {
+            // The run completed/was replaced between capture and signal; nothing left to cancel.
+        }
+    }
+
+    /// <summary>
+    /// Swaps in a fresh run CTS and hands back the <paramref name="previous"/> one (without disposing it)
+    /// so the caller can dispose it <b>outside</b> <c>_gate</c> (ADR-0010). The superseded CTS is removed
+    /// from the field atomically under the lock, so no two callers ever capture the same reference — the
+    /// disposal is single-owner and cannot double-dispose or race a concurrent recreate.
+    /// </summary>
+    private CancellationToken RecreateRunToken(out CancellationTokenSource? previous)
+    {
+        previous = _runCts;
         _runCts = CancellationTokenSource.CreateLinkedTokenSource(_shutdownToken);
         return _runCts.Token;
     }

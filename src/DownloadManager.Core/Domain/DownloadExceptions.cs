@@ -22,6 +22,15 @@ public sealed class ResourceChangedException(string message)
 public sealed class TransientDownloadException(string message, Exception? inner = null)
     : DownloadException(message, isTransient: true, inner);
 
-/// <summary>A permanent failure (e.g. 404/410/401/403); retrying will not help.</summary>
+/// <summary>A permanent failure (e.g. 404/410); retrying will not help.</summary>
 public sealed class PermanentDownloadException(string message, Exception? inner = null)
+    : DownloadException(message, isTransient: false, inner);
+
+/// <summary>
+/// The server demanded credentials we don't (currently) have — a 401/403 (spec Phase 4 / ADR-0011).
+/// Distinct from <see cref="PermanentDownloadException"/>: it is <b>not</b> transient (don't retry-loop)
+/// but also <b>not</b> permanent (fresh credentials may fix it). Surfaced as a "needs credentials"
+/// reason on the outcome; partial progress is preserved, never discarded.
+/// </summary>
+public sealed class NeedsCredentialsException(string message, Exception? inner = null)
     : DownloadException(message, isTransient: false, inner);
