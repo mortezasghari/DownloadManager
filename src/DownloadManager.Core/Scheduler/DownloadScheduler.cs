@@ -176,11 +176,12 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
                     return;
                 }
 
-                // 2. Cancel intent beats everything else.
+                // 2. Cancel intent beats everything else. Discard *before* publishing Canceled, so an
+                // observer that sees Canceled also sees the state already discarded.
                 if (handle.CancelRequested)
                 {
-                    handle.MarkCanceled();
                     _engine.Discard(handle.Request.TargetPath);
+                    handle.MarkCanceled();
                     LogTerminal(handle.Id, DownloadStatus.Canceled);
                     return;
                 }
@@ -222,8 +223,8 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
                     // Cancelling mid-backoff returns promptly — it does not wait out the delay.
                     if (handle.CancelRequested)
                     {
-                        handle.MarkCanceled();
                         _engine.Discard(handle.Request.TargetPath);
+                        handle.MarkCanceled();
                         LogTerminal(handle.Id, DownloadStatus.Canceled);
                         return;
                     }
