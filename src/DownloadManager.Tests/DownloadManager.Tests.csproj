@@ -20,6 +20,8 @@
   <ItemGroup>
     <ProjectReference Include="..\DownloadManager.Core\DownloadManager.Core.csproj" />
     <ProjectReference Include="..\DownloadManager.Persistence\DownloadManager.Persistence.csproj" />
+    <!-- Phase 5: headless view-model tests. The VM types are pure BCL/Core (no Avalonia surface). -->
+    <ProjectReference Include="..\DownloadManager.UI\DownloadManager.UI.csproj" />
   </ItemGroup>
 
 </Project>

@@ -14,6 +14,11 @@ public interface IDownloadHandle
     /// retained; supplying credentials and retrying can resume it.</summary>
     bool NeedsCredentials { get; }
 
+    /// <summary>Latest progress snapshot for the active/most-recent run — a lock-free
+    /// <see cref="Volatile"/> read of the engine's progress counters, safe to poll from the UI thread.
+    /// Bytes only; speed/ETA are derived by the consumer from successive snapshots + a clock.</summary>
+    DownloadProgress Progress { get; }
+
     /// <summary>Completes when the status first satisfies <paramref name="predicate"/>.</summary>
     Task WaitForStatusAsync(Func<DownloadStatus, bool> predicate, CancellationToken cancellationToken = default);
 }

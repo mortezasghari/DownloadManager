@@ -297,6 +297,13 @@ public sealed partial class DownloadEngine(
             request.Headers.TryAddWithoutValidation("If-Range", ifRange);
         }
 
+        if (isResume)
+        {
+            // Resume diagnostics: the offset we continue from and the validators we predicate on (§6d/§7).
+            LogSegmentResuming(id, segmentId, writeOffset, segment.Start, segment.EndInclusive,
+                metadata.ETag, metadata.LastModified);
+        }
+
         // Credentials ride along only if the (possibly redirected) final URL is the credential origin.
         authorizer.Authorize(request);
 
@@ -304,7 +311,17 @@ public sealed partial class DownloadEngine(
         using var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
         using var response = await SendWithClassificationAsync(request, attempt.Token, ct).ConfigureAwait(false);
-        writeOffset = ValidateSegmentResponse(response, segment, writeOffset, metadata.TotalSize, isResume);
+        try
+        {
+            writeOffset = ValidateSegmentResponse(response, segment, writeOffset, metadata.TotalSize, isResume);
+        }
+        catch (ResourceChangedException ex)
+        {
+            // A corrupt/invalid resume must be fully diagnosable: id, segment, offsets, validators, status.
+            LogSegmentResumeRejected(id, segmentId, writeOffset, segment.Start, segment.EndInclusive,
+                metadata.TotalSize, (int)response.StatusCode, metadata.ETag, metadata.LastModified, ex.Message);
+            throw;
+        }
 
         var stream = await response.Content.ReadAsStreamAsync(attempt.Token).ConfigureAwait(false);
         var buffer = ArrayPool<byte>.Shared.Rent(_engineOptions.CopyBufferSize);
@@ -375,7 +392,9 @@ public sealed partial class DownloadEngine(
 
         if (writeOffset != segment.EndInclusive + 1)
         {
-            // The connection closed before the segment finished — transient, safe to resume later.
+            // The connection closed before the segment finished — transient, safe to resume later. Log
+            // the durable offset so a stalled/short resume is diagnosable.
+            LogSegmentShort(id, segmentId, writeOffset, segment.EndInclusive + 1);
             throw new TransientDownloadException(
                 $"Segment {segmentId} ended at {writeOffset}, expected {segment.EndInclusive + 1}.");
         }
@@ -623,4 +642,19 @@ public sealed partial class DownloadEngine(
     [LoggerMessage(Level = LogLevel.Error,
         Message = "Download {Id} SHA-256 mismatch (expected {Expected}, computed {Actual}); file and metadata retained.")]
     private partial void LogChecksumMismatch(DownloadId id, string expected, string actual);
+
+    [LoggerMessage(Level = LogLevel.Debug,
+        Message = "Download {Id} segment {SegmentId} resuming from offset {From} (range {Start}-{End}), If-Range etag {ETag}, last-modified {LastModified}.")]
+    private partial void LogSegmentResuming(
+        DownloadId id, int segmentId, long from, long start, long end, string? eTag, DateTimeOffset? lastModified);
+
+    [LoggerMessage(Level = LogLevel.Warning,
+        Message = "Download {Id} segment {SegmentId} resume rejected at offset {From} (range {Start}-{End}, expected total {ExpectedTotal}, HTTP {Status}, etag {ETag}, last-modified {LastModified}): {Reason}")]
+    private partial void LogSegmentResumeRejected(
+        DownloadId id, int segmentId, long from, long start, long end, long expectedTotal, int status,
+        string? eTag, DateTimeOffset? lastModified, string reason);
+
+    [LoggerMessage(Level = LogLevel.Warning,
+        Message = "Download {Id} segment {SegmentId} ended short at durable offset {Offset}, expected {Expected}; resumable.")]
+    private partial void LogSegmentShort(DownloadId id, int segmentId, long offset, long expected);
 }

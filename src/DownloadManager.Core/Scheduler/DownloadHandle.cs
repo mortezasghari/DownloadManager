@@ -9,7 +9,7 @@ namespace DownloadManager.Core.Scheduler;
 /// worker never race into an illegal state, a double-start, or a leaked token. Pause and cancel are
 /// <b>distinct intents</b> (separate flags), not the same signal.
 /// </summary>
-public sealed class DownloadHandle : IDownloadHandle, IDisposable
+public sealed class DownloadHandle : IDownloadHandle, IProgress<DownloadProgress>, IDisposable
 {
     private static readonly (DownloadStatus From, DownloadStatus To)[] LegalTransitions =
     [
@@ -41,6 +41,13 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
     private int _attemptsMade;
     private CancellationTokenSource? _runCts;
     private bool _disposed;
+
+    // Lock-free progress, published by the engine via IProgress.Report and read by the UI. Each field
+    // is updated/read with Volatile; reports are low-frequency (per checkpoint), so there is no boxing
+    // and no contention worth a lock — at worst a reader sees one field a tick stale, harmless for display.
+    private long _completedBytes;
+    private long _totalBytes;
+    private int _phase; // DownloadPhase
 
     public DownloadHandle(DownloadRequest request, CancellationToken shutdownToken)
     {
@@ -78,6 +85,21 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
     public bool NeedsCredentials
     {
         get { lock (_gate) { return _needsCredentials; } }
+    }
+
+    // Lock-free progress read (no _gate): assembled from independently-Volatile fields.
+    public DownloadProgress Progress => new(
+        Volatile.Read(ref _completedBytes),
+        Volatile.Read(ref _totalBytes),
+        (DownloadPhase)Volatile.Read(ref _phase));
+
+    /// <summary>The engine reports progress here (the scheduler passes the handle as the run's
+    /// <see cref="IProgress{T}"/>). Called from segment worker threads; lock-free, display-only.</summary>
+    public void Report(DownloadProgress value)
+    {
+        Volatile.Write(ref _completedBytes, value.CompletedBytes);
+        Volatile.Write(ref _totalBytes, value.TotalBytes);
+        Volatile.Write(ref _phase, (int)value.Phase);
     }
 
     // ---- Control operations (external) ----

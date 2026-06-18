@@ -9,7 +9,9 @@ using DownloadManager.Core.Scheduler;
 using DownloadManager.Persistence.Io;
 using DownloadManager.Persistence.Metadata;
 using DownloadManager.Persistence.Progress;
+using DownloadManager.UI.Services;
 using DownloadManager.UI.ViewModels;
+using DownloadManager.UI.Views;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -27,6 +29,12 @@ internal static class Program
         if (args.Contains("--smoke"))
         {
             return SelfTest.Run();
+        }
+
+        // Headless perf harness (local measurement; not part of the CI gate). See docs/perf.
+        if (args.Contains("--bench"))
+        {
+            return Bench.RunAsync().GetAwaiter().GetResult();
         }
 
         return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
@@ -49,6 +57,8 @@ internal static class Program
         services.AddLogging();
 
         services.AddSingleton<IAppInfoService, AppInfoService>();
+        services.AddSingleton<IFilePicker, AvaloniaFilePicker>();
+        services.AddSingleton<ICredentialPrompt, AvaloniaCredentialPrompt>();
         services.AddTransient<MainWindowViewModel>();
 
         // Engine composition root. Options are plain singletons for now; an Options/IConfiguration

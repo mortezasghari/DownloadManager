@@ -166,7 +166,8 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
         {
             while (true)
             {
-                var outcome = await _engine.RunAsync(handle.Request, progress: null, token).ConfigureAwait(false);
+                // The handle is the run's progress sink (lock-free counters surfaced to the UI, ADR-0010/0013).
+                var outcome = await _engine.RunAsync(handle.Request, handle, token).ConfigureAwait(false);
 
                 // 1. A real completion wins over any racing control op (the file is done, sidecars gone).
                 if (outcome.Kind == DownloadResultKind.Completed)
