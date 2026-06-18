@@ -66,6 +66,7 @@ internal static class Program
         services.AddSingleton<ITargetFileFactory, TargetFileFactory>();
         services.AddSingleton<IProgressLogStore, BinaryProgressLogStore>();
         services.AddSingleton<IMetadataStore, JsonMetadataStore>();
+        services.AddSingleton<ChecksumVerifier>();
         services.AddSingleton<IDownloadEngine, DownloadEngine>();
         services.AddSingleton<RecoveryService>();
         services.AddSingleton<RetryPolicy>();

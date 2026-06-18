@@ -25,14 +25,16 @@ public sealed partial class RangeProber(
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<RangeProber> _logger = logger;
 
-    public async Task<ProbeResult> ProbeAsync(Uri url, CancellationToken cancellationToken)
+    public async Task<ProbeResult> ProbeAsync(Uri url, RequestAuthorizer authorizer, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(url);
+        ArgumentNullException.ThrowIfNull(authorizer);
 
         var current = url;
         for (var redirect = 0; redirect <= _httpOptions.MaxRedirects; redirect++)
         {
             using var request = CreateProbeRequest(current, ifRange: null);
+            authorizer.Authorize(request); // same-origin only: stripped automatically on a cross-host redirect
             using var response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
 
             if (TryGetRedirect(response, current, out var next))
@@ -71,9 +73,11 @@ public sealed partial class RangeProber(
     /// unsafe and we report changed so the caller restarts (spec §7 default).
     /// </summary>
     public async Task<RevalidationResult> RevalidateAsync(
-        Uri finalUrl, ResourceValidators validators, long expectedSize, CancellationToken cancellationToken)
+        Uri finalUrl, ResourceValidators validators, long expectedSize, RequestAuthorizer authorizer,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(finalUrl);
+        ArgumentNullException.ThrowIfNull(authorizer);
 
         var ifRange = validators.ToIfRangeHeaderValue();
         if (ifRange is null)
@@ -83,7 +87,16 @@ public sealed partial class RangeProber(
         }
 
         using var request = CreateProbeRequest(finalUrl, ifRange);
+        authorizer.Authorize(request);
         using var response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+        // An auth failure on resume is "needs credentials", not "resource changed" — fail loudly *before*
+        // any discard so partial progress survives a stale-credential resume (ADR-0011).
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            LogRevalidated(finalUrl, unchanged: false, $"status {(int)response.StatusCode}");
+            throw HttpErrorClassifier.ForStatus(response.StatusCode);
+        }
 
         // 206 + matching total size => server honoured the precondition: unchanged.
         var unchanged =

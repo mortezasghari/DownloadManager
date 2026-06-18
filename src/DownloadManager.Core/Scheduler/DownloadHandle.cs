@@ -37,6 +37,7 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
     private DownloadStatus _status = DownloadStatus.Queued;
     private bool _pauseRequested;
     private bool _cancelRequested;
+    private bool _needsCredentials;
     private int _attemptsMade;
     private CancellationTokenSource? _runCts;
     private bool _disposed;
@@ -71,12 +72,21 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
         get { lock (_gate) { return _attemptsMade; } }
     }
 
+    /// <summary>True when the download is Failed because the server demanded credentials (401/403) and the
+    /// supplied ones were missing/stale. A <i>reason</i> on the Failed state (ADR-0011), not a new state:
+    /// the partial download is retained and the user can re-supply credentials and retry.</summary>
+    public bool NeedsCredentials
+    {
+        get { lock (_gate) { return _needsCredentials; } }
+    }
+
     // ---- Control operations (external) ----
 
     /// <summary>Pause: legal from Queued/Running/Retrying. Queued pauses directly; an active run is
     /// signalled and the worker completes the transition.</summary>
     public void Pause()
     {
+        CancellationTokenSource? toCancel = null;
         lock (_gate)
         {
             switch (_status)
@@ -86,12 +96,14 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
                     break;
                 case DownloadStatus.Running or DownloadStatus.Retrying:
                     _pauseRequested = true;
-                    _runCts?.Cancel();
+                    toCancel = _runCts; // cancel outside the lock (below)
                     break;
                 default:
                     throw new InvalidDownloadTransitionException(_status, "pause");
             }
         }
+
+        SignalRunCancellation(toCancel);
     }
 
     /// <summary>Resume: legal only from Paused. Moves to Queued; the scheduler re-enqueues.</summary>
@@ -112,6 +124,7 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
     /// Canceled (so the caller should discard state now); false if an active run was signalled to stop.</summary>
     public bool Cancel()
     {
+        CancellationTokenSource? toCancel = null;
         lock (_gate)
         {
             switch (_status)
@@ -121,12 +134,15 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
                     return true;
                 case DownloadStatus.Running or DownloadStatus.Retrying:
                     _cancelRequested = true;
-                    _runCts?.Cancel();
-                    return false;
+                    toCancel = _runCts; // cancel outside the lock (below)
+                    break;
                 default:
                     throw new InvalidDownloadTransitionException(_status, "cancel");
             }
         }
+
+        SignalRunCancellation(toCancel);
+        return false;
     }
 
     /// <summary>Manual retry: legal only from Failed. Resets the attempt budget; the scheduler re-enqueues.</summary>
@@ -160,6 +176,7 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
 
             _pauseRequested = false;
             _cancelRequested = false;
+            _needsCredentials = false;
             TransitionTo(DownloadStatus.Running);
             token = RecreateRunToken();
             return true;
@@ -186,7 +203,16 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
 
     public void CompleteRun() => SetTerminal(DownloadStatus.Completed);
 
-    public void FailRun() => SetTerminal(DownloadStatus.Failed);
+    /// <summary>Terminal Failed. <paramref name="needsCredentials"/> records the 401/403 "needs credentials"
+    /// reason (ADR-0011) as an attribute of the Failed state, not a separate state.</summary>
+    public void FailRun(bool needsCredentials = false)
+    {
+        lock (_gate)
+        {
+            _needsCredentials = needsCredentials;
+            TransitionTo(DownloadStatus.Failed);
+        }
+    }
 
     public void MarkPaused() => SetTerminal(DownloadStatus.Paused);
 
@@ -245,6 +271,31 @@ public sealed class DownloadHandle : IDownloadHandle, IDisposable
         lock (_gate)
         {
             TransitionTo(to);
+        }
+    }
+
+    /// <summary>
+    /// Triggers cancellation of the captured run CTS <b>outside</b> the <c>_gate</c> lock and without
+    /// running its registered callbacks on the caller's thread (ADR-0010). <c>CancellationTokenSource.Cancel()</c>
+    /// invokes callbacks synchronously, so calling it under <c>_gate</c> let a callback that re-enters the
+    /// handle — or blocks on any other lock — stall the whole control plane. Using <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/>
+    /// with <see cref="TimeSpan.Zero"/> arms the cancellation on a pool thread and returns immediately, so a
+    /// pathological callback can never block a pause/cancel. A disposed CTS (the run already ended) is benign.
+    /// </summary>
+    private static void SignalRunCancellation(CancellationTokenSource? cts)
+    {
+        if (cts is null)
+        {
+            return;
+        }
+
+        try
+        {
+            cts.CancelAfter(TimeSpan.Zero);
+        }
+        catch (ObjectDisposedException)
+        {
+            // The run completed/was replaced between capture and signal; nothing left to cancel.
         }
     }
 

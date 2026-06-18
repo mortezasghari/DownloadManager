@@ -40,9 +40,11 @@ internal sealed class EngineHarness : IDisposable
 
     public Uri Url { get; } = new("http://origin.test/file");
 
-    public DownloadEngine BuildEngine(FakeContentServer server)
+    public DownloadEngine BuildEngine(FakeContentServer server) => BuildEngine(server.Handle);
+
+    public DownloadEngine BuildEngine(Func<HttpRequestMessage, HttpResponseMessage> responder)
     {
-        var httpClient = new HttpClient(new FakeHttpMessageHandler(server.Handle));
+        var httpClient = new HttpClient(new FakeHttpMessageHandler(responder));
         var prober = new RangeProber(
             httpClient, new HttpOptions(), EngineOptions, Time, NullLogger<RangeProber>.Instance);
 
@@ -52,19 +54,27 @@ internal sealed class EngineHarness : IDisposable
             new TargetFileFactory(NullLogger<TargetFileFactory>.Instance),
             new BinaryProgressLogStore(new ProgressLogOptions(), NullLogger<BinaryProgressLogStore>.Instance),
             new JsonMetadataStore(NullLogger<JsonMetadataStore>.Instance),
+            new ChecksumVerifier(Time, NullLogger<ChecksumVerifier>.Instance),
             EngineOptions,
             Time,
             NullLogger<DownloadEngine>.Instance);
     }
 
-    public DownloadRequest Request(int segmentCount = 1, PreallocationMode preallocation = PreallocationMode.Full) =>
+    public DownloadRequest Request(
+        int segmentCount = 1,
+        PreallocationMode preallocation = PreallocationMode.Full,
+        string? expectedSha256 = null,
+        DownloadCredentials? credentials = null,
+        Uri? url = null) =>
         new()
         {
             Id = DownloadId.New(),
-            Url = Url,
+            Url = url ?? Url,
             TargetPath = TargetPath,
             SegmentCount = segmentCount,
             Preallocation = preallocation,
+            ExpectedSha256 = expectedSha256,
+            Credentials = credentials ?? DownloadCredentials.None,
         };
 
     public byte[] ReadTarget() => File.ReadAllBytes(TargetPath);

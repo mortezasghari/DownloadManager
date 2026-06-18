@@ -9,6 +9,11 @@ public interface IDownloadHandle
 
     DownloadStatus Status { get; }
 
+    /// <summary>When <see cref="Status"/> is <see cref="DownloadStatus.Failed"/>, true if the reason is a
+    /// 401/403 "needs credentials" (ADR-0011) rather than a generic failure. The partial download is
+    /// retained; supplying credentials and retrying can resume it.</summary>
+    bool NeedsCredentials { get; }
+
     /// <summary>Completes when the status first satisfies <paramref name="predicate"/>.</summary>
     Task WaitForStatusAsync(Func<DownloadStatus, bool> predicate, CancellationToken cancellationToken = default);
 }

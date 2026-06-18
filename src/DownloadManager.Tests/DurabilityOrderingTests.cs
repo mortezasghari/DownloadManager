@@ -36,6 +36,7 @@ public class DurabilityOrderingTests
             new RecordingTargetFileFactory(target),
             new RecordingProgressLogStore(session),
             new InMemoryMetadataStore(),
+            new ChecksumVerifier(time, NullLogger<ChecksumVerifier>.Instance),
             options,
             time,
             NullLogger<DownloadEngine>.Instance);

@@ -202,11 +202,13 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
                     return;
                 }
 
-                // 5. Failure: retry with backoff, or give up.
+                // 5. Failure: retry with backoff, or give up. A "needs credentials" (401/403) outcome is
+                // non-transient, so it lands here and terminates as Failed-with-reason — no retry-loop,
+                // and the partial download is retained (not discarded) so a re-auth can resume (ADR-0011).
                 var attempts = handle.IncrementAttempts();
                 if (!outcome.IsTransient || !_retryPolicy.ShouldRetry(attempts))
                 {
-                    handle.FailRun();
+                    handle.FailRun(outcome.NeedsCredentials);
                     LogFailed(handle.Id, attempts, outcome.Error ?? "(none)");
                     return;
                 }
