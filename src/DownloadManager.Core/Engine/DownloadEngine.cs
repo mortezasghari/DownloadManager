@@ -54,8 +54,33 @@ public sealed partial class DownloadEngine(
         catch (DownloadException ex)
         {
             LogFailed(request.Id, ex.IsTransient, ex.Message);
-            return DownloadOutcome.Failed(0, ex.Message);
+            return DownloadOutcome.Failed(0, ex.Message, ex.IsTransient, ex.RetryAfter);
         }
+    }
+
+    /// <summary>Discards a download's partial state (sidecars + target). Used by the scheduler on cancel.</summary>
+    public void Discard(string targetPath) => DiscardState(targetPath);
+
+    private TimeSpan? ReadRetryAfter(HttpResponseMessage response)
+    {
+        var retryAfter = response.Headers.RetryAfter;
+        if (retryAfter is null)
+        {
+            return null;
+        }
+
+        if (retryAfter.Delta is { } delta)
+        {
+            return delta;
+        }
+
+        if (retryAfter.Date is { } date)
+        {
+            var delay = date - _timeProvider.GetUtcNow();
+            return delay > TimeSpan.Zero ? delay : TimeSpan.Zero;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -357,7 +382,7 @@ public sealed partial class DownloadEngine(
             using var response = await SendWithClassificationAsync(httpRequest, attempt.Token, ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                throw HttpErrorClassifier.ForStatus(response.StatusCode);
+                throw HttpErrorClassifier.ForStatus(response.StatusCode, ReadRetryAfter(response));
             }
 
             var stream = await response.Content.ReadAsStreamAsync(attempt.Token).ConfigureAwait(false);
@@ -429,7 +454,7 @@ public sealed partial class DownloadEngine(
     }
 
     /// <summary>Validates a segment response and returns the offset writing should actually start at.</summary>
-    private static long ValidateSegmentResponse(
+    private long ValidateSegmentResponse(
         HttpResponseMessage response, SegmentRange segment, long expectedFrom, long totalSize, bool isResume)
     {
         switch (response.StatusCode)
@@ -467,7 +492,7 @@ public sealed partial class DownloadEngine(
                 throw new ResourceChangedException("416 Range Not Satisfiable: the resource shrank or changed.");
 
             default:
-                throw HttpErrorClassifier.ForStatus(response.StatusCode);
+                throw HttpErrorClassifier.ForStatus(response.StatusCode, ReadRetryAfter(response));
         }
     }
 

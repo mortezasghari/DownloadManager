@@ -6,6 +6,9 @@ public abstract class DownloadException(string message, bool isTransient, Except
 {
     /// <summary>True if a retry with backoff might succeed (timeout, reset, 5xx, 429); false for 404/401/etc.</summary>
     public bool IsTransient { get; } = isTransient;
+
+    /// <summary>Server-supplied <c>Retry-After</c> hint (from 429/503), if any. The scheduler honors it.</summary>
+    public TimeSpan? RetryAfter { get; init; }
 }
 
 /// <summary>

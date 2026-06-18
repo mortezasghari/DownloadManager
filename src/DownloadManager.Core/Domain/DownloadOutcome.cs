@@ -7,13 +7,22 @@ public enum DownloadResultKind
     Canceled,
 }
 
-/// <summary>Terminal result of an engine run.</summary>
-public sealed record DownloadOutcome(DownloadResultKind Kind, long CompletedBytes, string? Error = null)
+/// <summary>
+/// Terminal result of one engine run. For failures it carries the retry classification and any
+/// server-supplied <c>Retry-After</c>, so the scheduler can decide whether/when to retry (spec §8)
+/// without re-inspecting HTTP details.
+/// </summary>
+public sealed record DownloadOutcome(
+    DownloadResultKind Kind,
+    long CompletedBytes,
+    string? Error = null,
+    bool IsTransient = false,
+    TimeSpan? RetryAfter = null)
 {
     public static DownloadOutcome Completed(long bytes) => new(DownloadResultKind.Completed, bytes);
 
     public static DownloadOutcome Canceled(long bytes) => new(DownloadResultKind.Canceled, bytes);
 
-    public static DownloadOutcome Failed(long bytes, string error) =>
-        new(DownloadResultKind.Failed, bytes, error);
+    public static DownloadOutcome Failed(long bytes, string error, bool isTransient, TimeSpan? retryAfter = null) =>
+        new(DownloadResultKind.Failed, bytes, error, isTransient, retryAfter);
 }

@@ -28,6 +28,12 @@ internal sealed class FakeContentServer
     /// <summary>Offset added to the reported <c>Content-Range</c> start to forge a mismatch.</summary>
     public long ReportedFromDelta { get; set; }
 
+    /// <summary>If set, non-probe (work) requests return this status (e.g. 503) instead of content.</summary>
+    public HttpStatusCode? WorkStatusOverride { get; set; }
+
+    /// <summary>Optional <c>Retry-After</c> delta attached to <see cref="WorkStatusOverride"/> responses.</summary>
+    public TimeSpan? WorkRetryAfter { get; set; }
+
     private readonly Lock _gate = new();
 
     public List<(HttpMethod Method, long? RangeFrom, long? RangeTo, string? IfRange)> Requests { get; } = [];
@@ -44,6 +50,18 @@ internal sealed class FakeContentServer
                 : null;
 
             Requests.Add((request.Method, range?.From, range?.To, ifRange));
+
+            var isProbe = range is { From: 0, To: 0 };
+            if (!isProbe && WorkStatusOverride is { } status)
+            {
+                var failure = new HttpResponseMessage(status) { Content = new ByteArrayContent([]) };
+                if (WorkRetryAfter is { } retryAfter)
+                {
+                    failure.Headers.RetryAfter = new RetryConditionHeaderValue(retryAfter);
+                }
+
+                return failure;
+            }
 
             var preconditionFailed = ifRange is not null && !IfRangeMatches(ifRange);
             var honourRange = SupportsRanges && range is not null && !preconditionFailed;

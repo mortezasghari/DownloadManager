@@ -5,6 +5,7 @@ using DownloadManager.Core.Configuration;
 using DownloadManager.Core.Engine;
 using DownloadManager.Core.Http;
 using DownloadManager.Core.Recovery;
+using DownloadManager.Core.Scheduler;
 using DownloadManager.Persistence.Io;
 using DownloadManager.Persistence.Metadata;
 using DownloadManager.Persistence.Progress;
@@ -56,6 +57,8 @@ internal static class Program
         services.AddSingleton(new EngineOptions());
         services.AddSingleton(new HttpOptions());
         services.AddSingleton(new ProgressLogOptions());
+        services.AddSingleton(new SchedulerOptions());
+        services.AddSingleton(new RetryOptions());
 
         services.AddSingleton<SharedHttpClient>();
         services.AddSingleton(sp => sp.GetRequiredService<SharedHttpClient>().Client);
@@ -65,12 +68,14 @@ internal static class Program
         services.AddSingleton<IMetadataStore, JsonMetadataStore>();
         services.AddSingleton<IDownloadEngine, DownloadEngine>();
         services.AddSingleton<RecoveryService>();
+        services.AddSingleton<RetryPolicy>();
+        services.AddSingleton<IDownloadScheduler, DownloadScheduler>();
 
         var provider = services.BuildServiceProvider();
 
-        // Resolve the engine graph once so it is rooted in the Native AOT image (and DI wiring is
-        // validated at startup). This keeps the native preallocation P/Invokes in the trimmed graph.
-        _ = provider.GetRequiredService<IDownloadEngine>();
+        // Resolve the lifecycle graph once so it is rooted in the Native AOT image (and DI wiring is
+        // validated at startup). This keeps the engine, scheduler, and native P/Invokes in the trimmed graph.
+        _ = provider.GetRequiredService<IDownloadScheduler>();
         _ = provider.GetRequiredService<RecoveryService>();
 
         return provider;

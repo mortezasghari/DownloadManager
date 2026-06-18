@@ -15,7 +15,7 @@ internal static class HttpErrorClassifier
         || status is HttpStatusCode.RequestTimeout      // 408
         || status is HttpStatusCode.TooManyRequests;    // 429
 
-    public static DownloadException ForStatus(HttpStatusCode status)
+    public static DownloadException ForStatus(HttpStatusCode status, TimeSpan? retryAfter = null)
     {
         var code = (int)status;
 
@@ -29,7 +29,7 @@ internal static class HttpErrorClassifier
         }
 
         return IsTransient(status)
-            ? new TransientDownloadException($"HTTP {code} {status}.")
+            ? new TransientDownloadException($"HTTP {code} {status}.") { RetryAfter = retryAfter }
             : new PermanentDownloadException($"Unexpected HTTP {code} {status}.");
     }
 }

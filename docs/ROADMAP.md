@@ -11,11 +11,11 @@ recovery correctness — are already complete.
 | **0 — AOT spike** | Solution, CPM, 4 projects, multi-RID AOT gate | ✅ Done |
 | **1 — Durability-first single-stream** | Engine (1-segment), durable persistence, crash-safe recovery, `If-Range` resume | ✅ Done |
 | **2 — Segmentation** | N parallel segments, range probing, native preallocation | ✅ Done |
-| **3 — Scheduler & control** | `Channels` queue, concurrency, pause/resume/cancel, retry+backoff | ⬜ Not started (next) |
-| **4 — Ingestion & network breadth** | URL import, auth/cookies/proxy, encoding, checksum | 🟡 ~20% (proxy + encoding done) |
+| **3 — Scheduler & control** | `Channels` queue, concurrency, pause/resume/cancel, retry+backoff | ✅ Done |
+| **4 — Ingestion & network breadth** | URL import, auth/cookies/proxy, encoding, checksum | 🟡 ~20% (proxy + encoding done) — next |
 | **5 — Polish & tuning** | Real UI, perf measurement, log completeness | 🟡 ~10% (Phase 0 shell only) |
 
-**Roughly 55% of total effort complete.** Remaining phases are mostly breadth, not depth.
+**Roughly 70% of total effort complete.** Remaining phases are mostly breadth, not depth.
 
 ## Done (verified)
 
@@ -31,21 +31,18 @@ recovery correctness — are already complete.
   recovery resumes only incomplete segments, each with `If-Range`. ADR-0006/0007.
 - The engine was already segment-shaped, so recovery and the §6c durability
   ordering generalized without a second code path.
-- ADRs 0001–0007 recorded.
+- **Phase 3**: `DownloadScheduler` owns the lifecycle — a bounded `Channel` queue
+  drained by a fixed worker pool (the global concurrency gate; a backing-off
+  download still holds its slot). Explicit state machine (ADR-0008) with legal
+  transitions only and loud rejection of illegal ones; pause and cancel are
+  distinct intents. Pause/resume round-trips through persistence, not in-memory
+  hold (ADR-0009). Exponential backoff + jitter, `TimeProvider`-driven, honoring
+  `Retry-After`; backoff is a distinct, cancellable state. Cancel discards.
+- ADRs 0001–0009 recorded.
 
 ## Next steps
 
-### ▶ Phase 3 — Scheduler & control (next)
-
-1. `System.Threading.Channels` bounded queue; max-concurrent-downloads gate.
-   (Per-download segment concurrency already exists via `MaxSegmentConcurrency`.)
-2. Operations: enqueue / pause / resume / cancel / retry via `CancellationToken`.
-3. Retry policy: exponential backoff + jitter (`TimeProvider`-driven), bounded
-   attempts, honor `Retry-After`. The transient/permanent classifier
-   (`HttpErrorClassifier`) already exists.
-4. This is where the Phase-1 "queue" item lands properly.
-
-### Phase 4 — Ingestion & network breadth
+### ▶ Phase 4 — Ingestion & network breadth (next)
 
 1. Per-download auth headers + cookies (plumb through the request).
 2. URL import / list ingestion.

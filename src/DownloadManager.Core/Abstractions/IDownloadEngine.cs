@@ -13,4 +13,7 @@ public interface IDownloadEngine
         DownloadRequest request,
         IProgress<DownloadProgress>? progress,
         CancellationToken cancellationToken);
+
+    /// <summary>Discards a download's partial state (metadata, progress log, and partial target file).</summary>
+    void Discard(string targetPath);
 }
