@@ -24,7 +24,9 @@ public class QueueDeleteTests
         await harness.Gate.WaitStartedAsync(1, Timeout()); // running: work request is blocked at the gate
 
         await harness.Scheduler.CancelAsync(request.Id);   // delete a RUNNING download
-        harness.Gate.OpenGate();                           // let the cancelled run unwind
+        // Do NOT open the gate: the run-token cancellation unblocks the gated request *as canceled*, so the
+        // download tears down through the state machine. Opening the gate would race the (async) cancel
+        // against completion of this tiny download — the bug a prior revision hit.
 
         await handle.WaitForStatusAsync(s => s == DownloadStatus.Canceled, Timeout());
         Assert.Equal(DownloadStatus.Canceled, handle.Status);
