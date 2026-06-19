@@ -59,9 +59,13 @@ public sealed class PreallocationTests : IDisposable
         }
     }
 
-    // Native full reservation is unreachable on arm64 macOS under the LibraryImport-only constraint.
+    // Native full reservation is unreachable on arm64 macOS: fcntl(F_PREALLOCATE) is variadic and the
+    // arm64 calling convention for it isn't expressible via LibraryImport (DllImport/__arglist forbidden
+    // by spec). This is a property of the *process* ABI, not the OS — an x86_64 process (incl. running
+    // under Rosetta 2 on Apple Silicon) uses the x64 ABI where the call marshals correctly, so it must
+    // gate on ProcessArchitecture, not OSArchitecture (which reports the host as Arm64 under Rosetta).
     private static bool NativeFullUnavailable =>
-        OperatingSystem.IsMacOS() && RuntimeInformation.OSArchitecture == Architecture.Arm64;
+        OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
 
     [Fact]
     public async Task Full_falls_back_to_sparse_when_native_allocation_is_unsupported()
