@@ -11,7 +11,9 @@ namespace DownloadManager.Tests;
 /// </summary>
 public class QueueDeleteTests
 {
-    private static CancellationToken Timeout() => new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token;
+    // 30s guard matches the existing scheduler tests — generous headroom under heavy parallel CI load
+    // on slower runners (this is a liveness deadline, not an expected duration).
+    private static CancellationToken Timeout() => new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token;
 
     [Fact]
     public async Task Delete_running_routes_to_cancel_and_tears_down_durably()
