@@ -8,6 +8,7 @@
         x:DataType="vm:ImportDialogViewModel"
         Title="Import URLs"
         Width="520" Height="520"
+        MinWidth="480" MinHeight="460"
         WindowStartupLocation="CenterOwner"
         CanResize="True">
 
