@@ -89,3 +89,20 @@ internal sealed class FakeCredentialPrompt(DownloadCredentials? credentials) : I
         return Task.FromResult(credentials);
     }
 }
+
+internal sealed class FakeClipboardTextSource(string? text) : IClipboardTextSource
+{
+    public Task<string?> GetTextAsync() => Task.FromResult(text);
+}
+
+/// <summary>Captures the add-path the import dialog would be shown with (and can auto-invoke it).</summary>
+internal sealed class FakeImportDialog : IImportDialog
+{
+    public Func<IReadOnlyList<Uri>, Task>? CapturedAddToQueue { get; private set; }
+
+    public Task ShowAsync(Func<IReadOnlyList<Uri>, Task> addToQueue)
+    {
+        CapturedAddToQueue = addToQueue;
+        return Task.CompletedTask;
+    }
+}

@@ -19,7 +19,7 @@
                PlaceholderText="https://… (http/https only)"
                VerticalAlignment="Center" />
       <Button Grid.Column="1" Margin="8,0,0,0" Content="Add URL" Command="{Binding AddCommand}" />
-      <Button Grid.Column="2" Margin="8,0,0,0" Content="Import list…" Command="{Binding ImportCommand}" />
+      <Button Grid.Column="2" Margin="8,0,0,0" Content="Import URLs…" Command="{Binding ImportDialogCommand}" />
     </Grid>
 
     <!-- Import summary (skip-with-reason surface) -->
@@ -60,7 +60,7 @@
                   <Button Content="Resume" Command="{Binding ResumeCommand}" IsVisible="{Binding CanResume}" />
                   <Button Content="Retry"  Command="{Binding RetryCommand}"  IsVisible="{Binding CanRetry}" />
                   <Button Content="Re-auth…" Command="{Binding ReauthorizeCommand}" IsVisible="{Binding CanReauthorize}" />
-                  <Button Content="Remove" Command="{Binding RemoveCommand}" />
+                  <Button Content="Delete" Command="{Binding RemoveCommand}" />
                 </StackPanel>
               </Grid>
             </Border>

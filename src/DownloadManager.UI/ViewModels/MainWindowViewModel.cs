@@ -18,6 +18,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private readonly TimeProvider _timeProvider;
     private readonly IFilePicker _filePicker;
     private readonly ICredentialPrompt _credentialPrompt;
+    private readonly IImportDialog _importDialog;
     private readonly ILogger<MainWindowViewModel> _logger;
     private readonly TimeSpan? _speedWindow;
     private readonly int _defaultSegmentCount = 8;
@@ -30,6 +31,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         TimeProvider timeProvider,
         IFilePicker filePicker,
         ICredentialPrompt credentialPrompt,
+        IImportDialog importDialog,
         ILogger<MainWindowViewModel> logger,
         string? downloadsDirectory = null,
         TimeSpan? speedWindow = null)
@@ -38,6 +40,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _timeProvider = timeProvider;
         _filePicker = filePicker;
         _credentialPrompt = credentialPrompt;
+        _importDialog = importDialog;
         _logger = logger;
         _speedWindow = speedWindow;
         DownloadsDirectory = downloadsDirectory
@@ -45,6 +48,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
         AddCommand = new AsyncRelayCommand(AddCurrentUrlAsync, () => IsValidHttpUrl(_newUrl));
         ImportCommand = new AsyncRelayCommand(ImportListAsync);
+        ImportDialogCommand = new AsyncRelayCommand(() => _importDialog.ShowAsync(EnqueueManyAsync));
     }
 
     public string Title => "Download Manager";
@@ -74,6 +78,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
     public AsyncRelayCommand AddCommand { get; }
 
     public AsyncRelayCommand ImportCommand { get; }
+
+    /// <summary>Opens the import-review dialog (paste / clipboard auto-paste); ticked URLs enqueue normally.</summary>
+    public AsyncRelayCommand ImportDialogCommand { get; }
 
     /// <summary>UI-timer tick: refresh every row's derived state (lock-free reads). Runs on the UI thread.</summary>
     public void Tick()
@@ -170,6 +177,15 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
 
         LogReauthorized(item.Id, resumed.Id);
+    }
+
+    /// <summary>Enqueue several URLs via the normal add-path (used by the import dialog). They start normally.</summary>
+    private async Task EnqueueManyAsync(IReadOnlyList<Uri> urls)
+    {
+        foreach (var url in urls)
+        {
+            await EnqueueAsync(url, DownloadCredentials.None).ConfigureAwait(true);
+        }
     }
 
     private async Task EnqueueAsync(Uri url, DownloadCredentials credentials)

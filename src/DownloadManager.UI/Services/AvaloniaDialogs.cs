@@ -1,10 +1,12 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Input.Platform; // ClipboardExtensions.TryGetTextAsync (Avalonia 12 replaced IClipboard.GetTextAsync)
 using Avalonia.Layout;
 using Avalonia.Platform.Storage;
 using DownloadManager.Core.Domain;
 using DownloadManager.UI.Services;
+using DownloadManager.UI.ViewModels;
 
 namespace DownloadManager.UI.Views;
 
@@ -94,5 +96,49 @@ internal sealed class AvaloniaCredentialPrompt : ICredentialPrompt
         string[] auth = string.IsNullOrWhiteSpace(authorization) ? [] : [authorization.Trim()];
         string[] cookies = string.IsNullOrWhiteSpace(cookie) ? [] : [cookie.Trim()];
         return new DownloadCredentials { AuthorizationHeaders = auth, Cookies = cookies };
+    }
+}
+
+/// <summary>Reads clipboard text via the active window's <c>TopLevel.Clipboard</c> (Avalonia 12).
+/// Null/non-text/unsupported content is guarded to <c>null</c> — never throws.</summary>
+internal sealed class AvaloniaClipboardTextSource : IClipboardTextSource
+{
+    public async Task<string?> GetTextAsync()
+    {
+        var clipboard = AvaloniaFilePicker.MainWindow()?.Clipboard;
+        if (clipboard is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return await clipboard.TryGetTextAsync();
+        }
+        catch
+        {
+            return null; // clipboard holds non-text content or is unavailable
+        }
+    }
+}
+
+/// <summary>Shows the import-review dialog, auto-pasting the clipboard on open; ticked URLs enqueue via
+/// the supplied add-path.</summary>
+internal sealed class AvaloniaImportDialog(IClipboardTextSource clipboard) : IImportDialog
+{
+    private readonly IClipboardTextSource _clipboard = clipboard;
+
+    public async Task ShowAsync(Func<IReadOnlyList<Uri>, Task> addToQueue)
+    {
+        if (AvaloniaFilePicker.MainWindow() is not { } owner)
+        {
+            return;
+        }
+
+        var viewModel = new ImportDialogViewModel(_clipboard, addToQueue);
+        var dialog = new ImportDialog { DataContext = viewModel };
+        viewModel.CloseRequested += (_, _) => dialog.Close();
+        await viewModel.LoadFromClipboardAsync(); // auto-paste
+        await dialog.ShowDialog(owner);
     }
 }
