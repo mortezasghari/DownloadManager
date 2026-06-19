@@ -22,6 +22,9 @@ jobs:
           - { os: ubuntu-24.04-arm,  rid: linux-arm64 }
           - { os: windows-latest,    rid: win-x64 }
           - { os: macos-latest,      rid: osx-arm64 }
+          # osx-x64 is a dedicated job below: GitHub-hosted Intel macOS (macos-13 / macos-13-large)
+          # would not allocate a runner, so osx-x64 is built + tested + smoke-run as x86_64 under
+          # Rosetta 2 on the Apple Silicon image (real x86_64 ISA + syscall ABI; ADR-0014).
 
     steps:
       - uses: actions/checkout@v6
@@ -57,6 +60,25 @@ jobs:
             echo "::error::AOT publish emitted trim/IL warnings"; exit 1
           fi
 
+      # Packaging tidy (Phase 5.6): separate native debug symbols into a distinct artifact (kept for
+      # symbolication, not shipped beside the binary) and drop any stray managed reference PDBs. The
+      # binary itself is already stripped (StripSymbols=true). Avalonia's unmanaged native deps
+      # (libSkiaSharp / libHarfBuzzSharp / libAvaloniaNative / av_libGLESv2) are prebuilt C/C++
+      # libraries with no static-link path, so they remain as required sidecars beside the binary.
+      - name: Separate debug symbols and drop stray sidecars
+        shell: bash
+        run: |
+          PUB="artifacts/publish/${{ matrix.rid }}"
+          SYM="artifacts/symbols/${{ matrix.rid }}"
+          mkdir -p "$SYM"
+          for s in "$PUB/DownloadManager.UI.dbg" "$PUB/DownloadManager.UI.pdb"; do
+            [ -f "$s" ] && mv "$s" "$SYM/"
+          done
+          [ -d "$PUB/DownloadManager.UI.dSYM" ] && mv "$PUB/DownloadManager.UI.dSYM" "$SYM/"
+          rm -f "$PUB"/DownloadManager.*.pdb   # belt-and-suspenders: managed reference PDBs
+          echo "== shipped bundle (${{ matrix.rid }}) =="; ls -la "$PUB"
+          echo "== separated symbols (${{ matrix.rid }}) =="; ls -la "$SYM"
+
       # Headless native self-test on EVERY RID: runs the published binary with --smoke (no display),
       # which exercises and proves the platform's native preallocation P/Invoke executed.
       - name: Self-test native binary (--smoke, all RIDs)
@@ -75,8 +97,82 @@ jobs:
           sleep 8
           if kill -0 $PID 2>/dev/null; then echo "launched OK"; kill $PID; else echo "exited early"; exit 1; fi
 
-      - name: Upload native image
+      - name: Upload native image (binary bundle, symbols separated out)
         uses: actions/upload-artifact@v7
         with:
           name: DownloadManager-${{ matrix.rid }}
           path: artifacts/publish/${{ matrix.rid }}
+
+      - name: Upload debug symbols (separate artifact)
+        uses: actions/upload-artifact@v7
+        with:
+          name: DownloadManager-${{ matrix.rid }}-symbols
+          path: artifacts/symbols/${{ matrix.rid }}
+
+  # osx-x64 (macOS Intel) — proven under Rosetta 2 on the Apple Silicon image, because GitHub-hosted
+  # Intel macOS runners (macos-13 / macos-13-large) would not allocate. Everything runs as a real
+  # x86_64 process (x64 SDK invoked via `arch -x86_64`), so the build, the FULL test suite — including
+  # the preallocation success-path test — the AOT publish, and --smoke all execute on x86_64 and exercise
+  # the F_PREALLOCATE struct layout / variadic-fcntl marshalling. Translation layer, not bare-metal Intel
+  # (ADR-0014).
+  osx-x64-rosetta:
+    name: osx-x64 (Rosetta)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rosetta 2
+        run: softwareupdate --install-rosetta --agree-to-license
+
+      - name: Install .NET 10 SDK (x64)
+        run: |
+          curl -fsSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
+          chmod +x dotnet-install.sh
+          ./dotnet-install.sh --channel 10.0 --architecture x64 --install-dir "$HOME/dotnet-x64"
+
+      - name: Build, test, publish, smoke — all as x86_64 (Rosetta)
+        shell: bash
+        run: |
+          set -o pipefail
+          DOTNET="$HOME/dotnet-x64/dotnet"
+          x64() { arch -x86_64 "$DOTNET" "$@"; }
+
+          # Prove we are genuinely running the x64 toolchain (RID should be osx-x64).
+          x64 --info | grep -iE 'Architecture|RID' || true
+
+          x64 restore DownloadManager.slnx
+          x64 build DownloadManager.slnx -c Release --no-restore
+          x64 test DownloadManager.slnx -c Release --no-build
+          x64 publish src/DownloadManager.UI/DownloadManager.UI.csproj \
+            -c Release -r osx-x64 -o artifacts/publish/osx-x64 2>&1 | tee publish.log
+          if grep -nE ': warning |IL[0-9]{4}' publish.log; then
+            echo "::error::AOT publish emitted trim/IL warnings"; exit 1
+          fi
+
+      - name: Separate debug symbols and drop stray sidecars
+        shell: bash
+        run: |
+          PUB="artifacts/publish/osx-x64"
+          SYM="artifacts/symbols/osx-x64"
+          mkdir -p "$SYM"
+          [ -f "$PUB/DownloadManager.UI.dbg" ] && mv "$PUB/DownloadManager.UI.dbg" "$SYM/"
+          [ -d "$PUB/DownloadManager.UI.dSYM" ] && mv "$PUB/DownloadManager.UI.dSYM" "$SYM/"
+          rm -f "$PUB"/DownloadManager.*.pdb
+          echo "== shipped bundle (osx-x64) =="; ls -la "$PUB"
+          echo "== separated symbols (osx-x64) =="; ls -la "$SYM"
+
+      # The x64 proof: run the actual x86_64 native binary under Rosetta. Prints the F_PREALLOCATE line.
+      - name: Self-test native binary (--smoke as x86_64)
+        run: arch -x86_64 artifacts/publish/osx-x64/DownloadManager.UI --smoke
+
+      - name: Upload native image (binary bundle, symbols separated out)
+        uses: actions/upload-artifact@v7
+        with:
+          name: DownloadManager-osx-x64
+          path: artifacts/publish/osx-x64
+
+      - name: Upload debug symbols (separate artifact)
+        uses: actions/upload-artifact@v7
+        with:
+          name: DownloadManager-osx-x64-symbols
+          path: artifacts/symbols/osx-x64

@@ -4,8 +4,18 @@
     <OutputType>WinExe</OutputType>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
 
-    <!-- Native AOT: this is the shipped executable. -->
+    <!-- Native AOT: this is the shipped executable. AOT is the ONLY publish model — no
+         PublishSingleFile/PublishTrimmed (JIT) flavors (Phase 5.6). -->
     <PublishAot>true</PublishAot>
+
+    <!-- Packaging tidy (Phase 5.6): strip native debug symbols out of the shipped binary into a
+         separate file (*.dbg / *.pdb / *.dSYM). Kept for symbolication as a build artifact, not shipped
+         beside the binary (CI uploads it separately). -->
+    <StripSymbols>true</StripSymbols>
+
+    <!-- Keep the published bundle clean: do not copy referenced projects' managed .pdb/.xml sidecars
+         (the native image does not use them at runtime). A sentinel non-extension matches nothing. -->
+    <AllowedReferenceRelatedFileExtensions>.allowednone</AllowedReferenceRelatedFileExtensions>
 
     <!-- Avalonia 12 defaults to compiled bindings; make it explicit (spec §10). -->
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
