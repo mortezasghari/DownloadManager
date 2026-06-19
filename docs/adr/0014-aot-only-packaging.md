@@ -19,13 +19,27 @@ RID: the Native-AOT executable. `IsAotCompatible` / trim settings are unchanged,
 
 ### Five RIDs, all full matrix entries
 
-`linux-x64`, `linux-arm64`, `win-x64`, `osx-x64`, `osx-arm64`. Each runs build + all tests + AOT publish
-(0 trim/IL warnings) + `--smoke` on a real runner of that OS/arch. `osx-x64` (macos-13, Intel) is added
-because the `fcntl(F_PREALLOCATE)` reservation path had only ever executed on arm64 macOS; x64-vs-arm64
-is exactly where the variadic ABI / struct layout could differ, so it must be **proven on a real Intel
-mac**, not inferred. The `Full_preallocation_actually_runs_the_native_path_on_this_os` test is **not**
-OS-gated (its arm64 fallback branch is arm64-only), so on osx-x64 it asserts the native path executed;
-`--smoke` independently prints the proof line.
+`linux-x64`, `linux-arm64`, `win-x64`, `osx-x64`, `osx-arm64`. Four run build + all tests + AOT publish
+(0 trim/IL warnings) + `--smoke` on a native runner of that OS/arch.
+
+`osx-x64` is added because the `fcntl(F_PREALLOCATE)` reservation path had only ever executed on arm64
+macOS; x64-vs-arm64 is exactly where the variadic ABI / `struct fstore` layout could differ, so it must
+be **exercised as a real x86_64 process**, not inferred from arm64.
+
+The intent was a bare-metal Intel runner, but **GitHub-hosted Intel macOS would not allocate** — both
+`macos-13` (queued ~1.5 h, no runner) and `macos-13-large` (queued ~7.8 h, no runner) failed to schedule
+(Intel hosted capacity is retired/exhausted on this account). The accepted fallback is **Rosetta 2 on the
+Apple Silicon image**: a dedicated job installs the x64 .NET SDK and runs the build, the **full test
+suite**, the AOT publish, and `--smoke` all via `arch -x86_64`, so every step is a genuine x86_64 process
+making x86_64 syscalls to the XNU kernel — which is precisely what the F_PREALLOCATE struct-layout /
+marshalling concern needs. The `Full_preallocation_actually_runs_the_native_path_on_this_os` test is
+**not** OS-gated (its fallback branch is arm64-only), so running as x64 it asserts the native path
+executed; `--smoke` independently prints the proof line.
+
+Caveat (recorded honestly): this is Apple's translation layer, **not bare-metal Intel silicon**. It
+validates the x86_64 instruction stream and syscall ABI, not Intel-specific microarchitecture. If a real
+Intel mac (self-hosted or future hosted capacity) becomes available, osx-x64 should move back to native
+execution.
 
 ### Symbols separated, binary stripped
 
@@ -46,4 +60,5 @@ beside the binary. Per spec, this is reported, not forced with a startup-harming
 
 - Shipped bundle per RID = stripped AOT binary + the unmanaged Avalonia native libs; nothing else.
 - Crash symbolication is possible from the separate symbols artifact.
-- The F_PREALLOCATE x64 path is gated by a real Intel-mac CI run, closing the last inferred-only gap.
+- The F_PREALLOCATE x64 path is gated by a real x86_64 CI run (under Rosetta), closing the
+  inferred-only gap — with the documented caveat that it is translated, not bare-metal Intel.
