@@ -5,6 +5,14 @@ namespace DownloadManager.Core.Configuration;
 /// an 8 MB fsync checkpoint interval (the dominant throughput/durability trade-off — §6b/§11),
 /// and a per-attempt deadline enforced via a linked CTS rather than <c>HttpClient.Timeout</c> (§3).
 /// </summary>
+/// <remarks>
+/// A few properties are <c>set</c> rather than <c>init</c> so the queue-settings panel (Phase 8/ADR-0018)
+/// can update this shared singleton live. The engine reads them at their natural cadence —
+/// <see cref="PerAttemptTimeout"/> per attempt, <see cref="SmallFileThresholdBytes"/> at download
+/// start — so a change applies to the next attempt / next-started download with no engine code change.
+/// Each is a single word (long / TimeSpan-over-long), written rarely from the UI thread; on the 64-bit
+/// RIDs we ship, and with the memory barriers the worker hits between downloads, reads are coherent.
+/// </remarks>
 public sealed record EngineOptions
 {
     public const string SectionName = "Engine";
@@ -20,7 +28,7 @@ public sealed record EngineOptions
     /// <see cref="CancellationTokenSource"/> deadline so a slow-but-progressing large-file stream is
     /// never aborted the way a global <c>HttpClient.Timeout</c> would (spec §3).
     /// </summary>
-    public TimeSpan PerAttemptTimeout { get; init; } = TimeSpan.FromSeconds(100);
+    public TimeSpan PerAttemptTimeout { get; set; } = TimeSpan.FromSeconds(100);
 
     /// <summary>
     /// Upper bound on segments per download. The requested count is clamped to <c>[1, this]</c>
@@ -32,7 +40,7 @@ public sealed record EngineOptions
     /// Files smaller than this are downloaded as a single stream regardless of the requested segment
     /// count — splitting tiny files just adds round-trips and fsyncs for no throughput gain (ADR-0007).
     /// </summary>
-    public long SmallFileThresholdBytes { get; init; } = 8L * 1024 * 1024;
+    public long SmallFileThresholdBytes { get; set; } = 8L * 1024 * 1024;
 
     /// <summary>Maximum segments downloaded in parallel within one download (spec §8).</summary>
     public int MaxSegmentConcurrency { get; init; } = 8;

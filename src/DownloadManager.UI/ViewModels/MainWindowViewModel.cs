@@ -24,7 +24,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private readonly ILogger<MainWindowViewModel> _logger;
     private readonly TimeSpan? _speedWindow;
     private readonly IFileRouter? _router;
-    private readonly int _defaultSegmentCount;
+    private readonly DownloadDefaults _defaults;
+
+    // Tracks each row's last-bucketed section so Tick only moves rows whose section actually changed.
+    private readonly Dictionary<DownloadItemViewModel, QueueSection> _section = [];
 
     private string _newUrl = string.Empty;
     private string _importSummary = string.Empty;
@@ -39,7 +42,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
         string? downloadsDirectory = null,
         TimeSpan? speedWindow = null,
         IFileRouter? router = null,
-        DownloadDefaults? defaults = null)
+        DownloadDefaults? defaults = null,
+        QueueSettingsViewModel? queueSettings = null)
     {
         _scheduler = scheduler;
         _timeProvider = timeProvider;
@@ -51,7 +55,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
         // Routing (ADR-0017) chooses the per-download destination by extension. When no router is
         // injected (headless tests), fall back to the flat Downloads directory.
         _router = router;
-        _defaultSegmentCount = defaults?.SegmentCount ?? 8;
+        // Read live (Phase 8): a settings-panel Save updates this shared instance, so new downloads pick
+        // up the new segment count while in-flight ones keep theirs.
+        _defaults = defaults ?? new DownloadDefaults();
+        QueueSettings = queueSettings;
         DownloadsDirectory = downloadsDirectory
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
 
@@ -64,7 +71,26 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     public string DownloadsDirectory { get; }
 
+    /// <summary>The inline queue-settings panel (Phase 8); null in headless tests that don't exercise it.</summary>
+    public QueueSettingsViewModel? QueueSettings { get; }
+
+    /// <summary>Every row, in arrival order — the authoritative list the buckets are partitioned from.</summary>
     public ObservableCollection<DownloadItemViewModel> Downloads { get; } = [];
+
+    /// <summary>Rows currently running or retrying (Phase 8 queue split).</summary>
+    public ObservableCollection<DownloadItemViewModel> Running { get; } = [];
+
+    /// <summary>Rows queued but not yet started.</summary>
+    public ObservableCollection<DownloadItemViewModel> Waiting { get; } = [];
+
+    /// <summary>Rows that are paused or terminal.</summary>
+    public ObservableCollection<DownloadItemViewModel> Finished { get; } = [];
+
+    public bool HasRunning => Running.Count > 0;
+
+    public bool HasWaiting => Waiting.Count > 0;
+
+    public bool HasFinished => Finished.Count > 0;
 
     public string NewUrl
     {
@@ -91,12 +117,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
     /// <summary>Opens the import-review dialog (paste / clipboard auto-paste); ticked URLs enqueue normally.</summary>
     public AsyncRelayCommand ImportDialogCommand { get; }
 
-    /// <summary>UI-timer tick: refresh every row's derived state (lock-free reads). Runs on the UI thread.</summary>
+    /// <summary>UI-timer tick: refresh every row's derived state (lock-free reads) and re-bucket any whose
+    /// section changed. Runs on the UI thread.</summary>
     public void Tick()
     {
         foreach (var item in Downloads)
         {
             item.Refresh();
+            Regroup(item);
         }
     }
 
@@ -144,7 +172,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
             }
         }
 
-        Downloads.Remove(item);
+        RemoveRow(item);
         LogRemoved(item.Id);
     }
 
@@ -172,18 +200,12 @@ public sealed partial class MainWindowViewModel : ObservableObject
             Credentials = credentials,
         };
 
-        var index = Downloads.IndexOf(item);
         var handle = await _scheduler.EnqueueAsync(resumed).ConfigureAwait(true);
         var replacement = NewItem(resumed, handle);
 
-        if (index >= 0)
-        {
-            Downloads[index] = replacement;
-        }
-        else
-        {
-            Downloads.Add(replacement);
-        }
+        var index = Downloads.IndexOf(item);
+        RemoveRow(item);
+        AddRow(replacement, index < 0 ? Downloads.Count : index);
 
         LogReauthorized(item.Id, resumed.Id);
     }
@@ -204,13 +226,67 @@ public sealed partial class MainWindowViewModel : ObservableObject
             Id = DownloadId.New(),
             Url = url,
             TargetPath = ResolveTargetPath(url),
-            SegmentCount = _defaultSegmentCount,
+            SegmentCount = _defaults.SegmentCount, // live: a settings Save changes this for new downloads
             Credentials = credentials,
         };
 
         var handle = await _scheduler.EnqueueAsync(request).ConfigureAwait(true);
-        Downloads.Add(NewItem(request, handle));
+        AddRow(NewItem(request, handle), Downloads.Count);
         LogEnqueued(request.Id, url);
+    }
+
+    /// <summary>Add a row to the master list and its current section bucket (Phase 8).</summary>
+    private void AddRow(DownloadItemViewModel item, int index)
+    {
+        Downloads.Insert(Math.Clamp(index, 0, Downloads.Count), item);
+        var section = item.Section;
+        _section[item] = section;
+        BucketFor(section).Add(item);
+        RaiseBucketCounts();
+    }
+
+    /// <summary>Remove a row from the master list and whichever bucket holds it.</summary>
+    private void RemoveRow(DownloadItemViewModel item)
+    {
+        Downloads.Remove(item);
+        if (_section.Remove(item, out var section))
+        {
+            BucketFor(section).Remove(item);
+            RaiseBucketCounts();
+        }
+    }
+
+    /// <summary>Move a row to a new bucket if (and only if) its section changed since last bucketing.</summary>
+    private void Regroup(DownloadItemViewModel item)
+    {
+        var section = item.Section;
+        if (_section.TryGetValue(item, out var previous) && previous == section)
+        {
+            return;
+        }
+
+        if (_section.TryGetValue(item, out previous))
+        {
+            BucketFor(previous).Remove(item);
+        }
+
+        _section[item] = section;
+        BucketFor(section).Add(item);
+        RaiseBucketCounts();
+    }
+
+    private ObservableCollection<DownloadItemViewModel> BucketFor(QueueSection section) => section switch
+    {
+        QueueSection.Running => Running,
+        QueueSection.Waiting => Waiting,
+        _ => Finished,
+    };
+
+    private void RaiseBucketCounts()
+    {
+        OnPropertyChanged(nameof(HasRunning));
+        OnPropertyChanged(nameof(HasWaiting));
+        OnPropertyChanged(nameof(HasFinished));
     }
 
     /// <summary>Extension routing (ADR-0017) when a router is present; otherwise the flat Downloads folder.</summary>

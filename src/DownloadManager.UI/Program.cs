@@ -62,6 +62,16 @@ internal static class Program
         services.AddSingleton<ICredentialPrompt, AvaloniaCredentialPrompt>();
         services.AddSingleton<IClipboardTextSource, AvaloniaClipboardTextSource>();
         services.AddSingleton<IImportDialog, AvaloniaImportDialog>();
+
+        // Inline queue-settings panel (Phase 8). It mutates the same shared option singletons the engine
+        // and scheduler read, and persists through the Phase-7 store at the default settings.json path.
+        services.AddSingleton(sp => new QueueSettingsViewModel(
+            sp.GetRequiredService<IDownloadScheduler>(),
+            sp.GetRequiredService<EngineOptions>(),
+            sp.GetRequiredService<RetryOptions>(),
+            sp.GetRequiredService<DownloadDefaults>(),
+            SettingsStore.DefaultPath(),
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger("QueueSettings")));
         services.AddTransient<MainWindowViewModel>();
 
         // Engine composition root. Tunables come from the user-editable settings.json, loaded once via

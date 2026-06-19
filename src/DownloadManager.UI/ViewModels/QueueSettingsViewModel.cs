@@ -1,0 +1,195 @@
+using DownloadManager.Core.Configuration;
+using DownloadManager.Core.Scheduler;
+using Microsoft.Extensions.Logging;
+
+namespace DownloadManager.UI.ViewModels;
+
+/// <summary>
+/// Inline queue-settings panel (Phase 8 / ADR-0018): an expand-to-edit "ribbon", not a separate window.
+/// Exposes exactly the five queue knobs. Edits are local until <see cref="SaveCommand"/> — there is no
+/// instant-apply and no debounce, because these knobs are a coupled set and applying mid-edit would push
+/// the engine through transient bad states and clamp half-typed values. On Save the whole set is
+/// validated/persisted through the existing Phase-7 store (so the UI can never write a config the loader
+/// would reject) and then applied <b>per knob, honestly</b>:
+/// <list type="bullet">
+/// <item>Max concurrent → live (resizes the gate now).</item>
+/// <item>Segments / small-file threshold → newly started downloads only.</item>
+/// <item>Retry attempts / backoff / timeout → the next attempt, including for in-flight downloads.</item>
+/// </list>
+/// Pure BCL + Core; references no Avalonia types, so it is headless-testable. Routing and the file-only
+/// advanced knobs (copy buffer, checkpoint cadence) are deliberately not here (ADR-0018).
+/// </summary>
+public sealed class QueueSettingsViewModel : ObservableObject
+{
+    private const double BytesPerMiB = 1024d * 1024d;
+
+    private readonly IDownloadScheduler _scheduler;
+    private readonly EngineOptions _engineOptions;
+    private readonly RetryOptions _retryOptions;
+    private readonly DownloadDefaults _downloadDefaults;
+    private readonly string _settingsPath;
+    private readonly ILogger _logger;
+    private readonly string? _userProfile;
+
+    private bool _isExpanded;
+    private int _maxConcurrentDownloads;
+    private int _segmentsPerDownload;
+    private double _smallFileThresholdMiB;
+    private int _maxAttempts;
+    private double _baseDelaySeconds;
+    private double _maxDelaySeconds;
+    private int _perAttemptTimeoutSeconds;
+
+    public QueueSettingsViewModel(
+        IDownloadScheduler scheduler,
+        EngineOptions engineOptions,
+        RetryOptions retryOptions,
+        DownloadDefaults downloadDefaults,
+        string settingsPath,
+        ILogger logger,
+        string? userProfile = null)
+    {
+        _scheduler = scheduler;
+        _engineOptions = engineOptions;
+        _retryOptions = retryOptions;
+        _downloadDefaults = downloadDefaults;
+        _settingsPath = settingsPath;
+        _logger = logger;
+        _userProfile = userProfile;
+
+        SaveCommand = new AsyncRelayCommand(() => { Save(); return Task.CompletedTask; });
+        CancelCommand = new AsyncRelayCommand(() => { Cancel(); return Task.CompletedTask; });
+        ToggleCommand = new AsyncRelayCommand(() => { Toggle(); return Task.CompletedTask; });
+
+        LoadFromLive();
+    }
+
+    /// <summary>Whether the ribbon is expanded for editing.</summary>
+    public bool IsExpanded
+    {
+        get => _isExpanded;
+        private set => SetProperty(ref _isExpanded, value);
+    }
+
+    public int MaxConcurrentDownloads
+    {
+        get => _maxConcurrentDownloads;
+        set => SetProperty(ref _maxConcurrentDownloads, value);
+    }
+
+    public int SegmentsPerDownload
+    {
+        get => _segmentsPerDownload;
+        set => SetProperty(ref _segmentsPerDownload, value);
+    }
+
+    /// <summary>Small-file threshold in MiB (size under which a download is not segmented).</summary>
+    public double SmallFileThresholdMiB
+    {
+        get => _smallFileThresholdMiB;
+        set => SetProperty(ref _smallFileThresholdMiB, value);
+    }
+
+    public int MaxAttempts
+    {
+        get => _maxAttempts;
+        set => SetProperty(ref _maxAttempts, value);
+    }
+
+    public double BaseDelaySeconds
+    {
+        get => _baseDelaySeconds;
+        set => SetProperty(ref _baseDelaySeconds, value);
+    }
+
+    public double MaxDelaySeconds
+    {
+        get => _maxDelaySeconds;
+        set => SetProperty(ref _maxDelaySeconds, value);
+    }
+
+    public int PerAttemptTimeoutSeconds
+    {
+        get => _perAttemptTimeoutSeconds;
+        set => SetProperty(ref _perAttemptTimeoutSeconds, value);
+    }
+
+    // Honest, per-knob apply-timing notes surfaced beside the relevant fields.
+    public string ConcurrencyNote => "Applies immediately.";
+
+    public string NewDownloadsNote => "Applies to new downloads.";
+
+    public string NextAttemptNote => "Applies to the next attempt (including in-flight).";
+
+    public AsyncRelayCommand SaveCommand { get; }
+
+    public AsyncRelayCommand CancelCommand { get; }
+
+    public AsyncRelayCommand ToggleCommand { get; }
+
+    /// <summary>
+    /// Persist the edited set and apply it. The whole set goes through the store's clamp/validate path,
+    /// so only legal values are written; the clamped result is then applied per knob and reflected back
+    /// into the fields.
+    /// </summary>
+    private void Save()
+    {
+        // Start from the persisted file so routing + file-only advanced knobs are preserved, then overlay
+        // exactly the five queue knobs this panel owns.
+        var raw = SettingsStore.ReadRaw(_settingsPath);
+        raw.Scheduler ??= new SchedulerSettings();
+        raw.Engine ??= new EngineSettings();
+        raw.Retry ??= new RetrySettings();
+
+        raw.Scheduler.MaxConcurrentDownloads = MaxConcurrentDownloads;
+        raw.Engine.SegmentsPerDownload = SegmentsPerDownload;
+        raw.Engine.SmallFileThresholdBytes = (long)Math.Round(SmallFileThresholdMiB * BytesPerMiB);
+        raw.Engine.PerAttemptTimeoutSeconds = PerAttemptTimeoutSeconds;
+        raw.Retry.MaxAttempts = MaxAttempts;
+        raw.Retry.BaseDelaySeconds = BaseDelaySeconds;
+        raw.Retry.MaxDelaySeconds = MaxDelaySeconds;
+
+        var resolved = SettingsStore.Save(_settingsPath, raw, _logger, _userProfile);
+
+        // Apply per knob to the shared singletons the engine/scheduler already read at their own cadence.
+        _scheduler.SetMaxConcurrency(resolved.Scheduler.MaxConcurrentDownloads);   // live gate resize
+        _downloadDefaults.SegmentCount = resolved.Defaults.SegmentCount;            // newly started downloads
+        _engineOptions.SmallFileThresholdBytes = resolved.Engine.SmallFileThresholdBytes; // newly started downloads
+        _engineOptions.PerAttemptTimeout = resolved.Engine.PerAttemptTimeout;       // next attempt
+        _retryOptions.MaxAttempts = resolved.Retry.MaxAttempts;                     // next attempt
+        _retryOptions.BaseDelay = resolved.Retry.BaseDelay;                         // next attempt
+        _retryOptions.MaxDelay = resolved.Retry.MaxDelay;                           // next attempt
+
+        LoadFromLive();   // show the clamped values that were actually applied
+        IsExpanded = false;
+    }
+
+    /// <summary>Discard unsaved edits and collapse — no write.</summary>
+    private void Cancel()
+    {
+        LoadFromLive();
+        IsExpanded = false;
+    }
+
+    private void Toggle()
+    {
+        if (!IsExpanded)
+        {
+            LoadFromLive(); // open with the current applied values, discarding any stale local edits
+        }
+
+        IsExpanded = !IsExpanded;
+    }
+
+    /// <summary>Populate the editable fields from the live/applied values (the shared singletons).</summary>
+    private void LoadFromLive()
+    {
+        MaxConcurrentDownloads = _scheduler.MaxConcurrency;
+        SegmentsPerDownload = _downloadDefaults.SegmentCount;
+        SmallFileThresholdMiB = _engineOptions.SmallFileThresholdBytes / BytesPerMiB;
+        PerAttemptTimeoutSeconds = (int)Math.Round(_engineOptions.PerAttemptTimeout.TotalSeconds);
+        MaxAttempts = _retryOptions.MaxAttempts;
+        BaseDelaySeconds = _retryOptions.BaseDelay.TotalSeconds;
+        MaxDelaySeconds = _retryOptions.MaxDelay.TotalSeconds;
+    }
+}

@@ -41,4 +41,15 @@ public interface IDownloadScheduler : IAsyncDisposable
     Task RetryAsync(DownloadId id, CancellationToken cancellationToken = default);
 
     IDownloadHandle? Find(DownloadId id);
+
+    /// <summary>The current size of the live concurrency gate (number of slots).</summary>
+    int MaxConcurrency { get; }
+
+    /// <summary>
+    /// Resize the live concurrency gate (Phase 8). Raising it spawns workers, admitting a waiting download
+    /// immediately; lowering it retires workers only after they finish their current download — a running
+    /// download is never killed. This is the gate's supported control surface: the run model, state
+    /// machine, durability ordering, channel, and retry path are unchanged.
+    /// </summary>
+    void SetMaxConcurrency(int maxConcurrentDownloads);
 }

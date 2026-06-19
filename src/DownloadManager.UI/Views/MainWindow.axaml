@@ -3,70 +3,213 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="clr-namespace:DownloadManager.UI.ViewModels"
-        mc:Ignorable="d" d:DesignWidth="820" d:DesignHeight="540"
+        mc:Ignorable="d" d:DesignWidth="860" d:DesignHeight="640"
         x:Class="DownloadManager.UI.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
         Title="{Binding Title}"
-        Width="820" Height="540"
+        Width="860" Height="640"
         WindowStartupLocation="CenterScreen">
 
-  <DockPanel Margin="12">
+  <Window.Styles>
+    <!-- Settings ribbon typography -->
+    <Style Selector="TextBlock.group-header">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="LetterSpacing" Value="0.8" />
+      <Setter Property="Opacity" Value="0.55" />
+    </Style>
+    <Style Selector="TextBlock.field-label">
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Opacity" Value="0.9" />
+    </Style>
+    <Style Selector="TextBlock.note">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="FontStyle" Value="Italic" />
+      <Setter Property="Opacity" Value="0.5" />
+    </Style>
+    <Style Selector="NumericUpDown.knob">
+      <Setter Property="Width" Value="140" />
+      <Setter Property="HorizontalAlignment" Value="Left" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <!-- Queue section headers -->
+    <Style Selector="TextBlock.section-header">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Opacity" Value="0.7" />
+    </Style>
+    <Style Selector="Border.section-count">
+      <Setter Property="Background" Value="#1F808080" />
+      <Setter Property="CornerRadius" Value="9" />
+      <Setter Property="Padding" Value="7,1" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+  </Window.Styles>
 
-    <!-- Command bar -->
-    <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,8">
+  <Window.Resources>
+    <!-- One shared row template; the running / waiting / finished sections all render rows the same way. -->
+    <DataTemplate x:Key="DownloadRow" x:DataType="vm:DownloadItemViewModel">
+      <Border BorderBrush="#22808080" BorderThickness="0,0,0,1" Padding="6,8">
+        <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
+
+          <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding StatusText}" Opacity="0.8" />
+          </StackPanel>
+
+          <ProgressBar Grid.Row="1" Grid.Column="0" Margin="0,4"
+                       Minimum="0" Maximum="100"
+                       Value="{Binding ProgressPercent}"
+                       IsIndeterminate="{Binding IsIndeterminate}" />
+
+          <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" Spacing="16" Opacity="0.75">
+            <TextBlock Text="{Binding SpeedText}" />
+            <TextBlock Text="{Binding EtaText}" />
+            <TextBlock Text="{Binding TargetPath}" TextTrimming="CharacterEllipsis" MaxWidth="360" />
+          </StackPanel>
+
+          <StackPanel Grid.Row="0" Grid.RowSpan="3" Grid.Column="1"
+                      Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <Button Content="Pause"  Command="{Binding PauseCommand}"  IsVisible="{Binding CanPause}" />
+            <Button Content="Resume" Command="{Binding ResumeCommand}" IsVisible="{Binding CanResume}" />
+            <Button Content="Retry"  Command="{Binding RetryCommand}"  IsVisible="{Binding CanRetry}" />
+            <Button Content="Re-auth…" Command="{Binding ReauthorizeCommand}" IsVisible="{Binding CanReauthorize}" />
+            <Button Content="Delete" Command="{Binding RemoveCommand}" />
+          </StackPanel>
+        </Grid>
+      </Border>
+    </DataTemplate>
+  </Window.Resources>
+
+  <DockPanel Margin="16">
+
+    <!-- Inline queue-settings ribbon: expand to edit, collapse when done (ADR-0018). -->
+    <Border DockPanel.Dock="Top" Background="#0A808080" BorderBrush="#22808080" BorderThickness="1"
+            CornerRadius="8" Padding="14,10" Margin="0,0,0,12">
+      <StackPanel Spacing="10">
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock Grid.Column="0" Text="Queue" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+          <Button Grid.Column="1" Content="⚙  Queue settings"
+                  Command="{Binding QueueSettings.ToggleCommand}"
+                  IsVisible="{Binding QueueSettings, Converter={x:Static ObjectConverters.IsNotNull}}" />
+        </Grid>
+
+        <!-- Editor: local edits until Save; Cancel discards (ADR-0018). DataContext switches to the panel
+             VM (resolved in the parent scope); x:DataType then types the remaining bindings against it. -->
+        <Border DataContext="{Binding QueueSettings}" x:DataType="vm:QueueSettingsViewModel"
+                IsVisible="{Binding IsExpanded, FallbackValue=False}"
+                BorderBrush="#22808080" BorderThickness="0,1,0,0" Padding="0,12,0,0">
+          <StackPanel Spacing="16">
+
+            <!-- Concurrency -->
+            <StackPanel Spacing="6">
+              <TextBlock Classes="group-header" Text="CONCURRENCY" />
+              <Grid ColumnDefinitions="230,Auto,*">
+                <TextBlock Grid.Column="0" Classes="field-label" Text="Max concurrent downloads" />
+                <NumericUpDown Grid.Column="1" Classes="knob" Minimum="1" Maximum="64" Increment="1"
+                               FormatString="0" Value="{Binding MaxConcurrentDownloads}" />
+                <TextBlock Grid.Column="2" Classes="note" VerticalAlignment="Center" Margin="14,0,0,0"
+                           Text="{Binding ConcurrencyNote}" />
+              </Grid>
+            </StackPanel>
+
+            <!-- Segmentation -->
+            <StackPanel Spacing="6">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Grid.Column="0" Classes="group-header" Text="SEGMENTATION" />
+                <TextBlock Grid.Column="1" Classes="note" Text="{Binding NewDownloadsNote}" />
+              </Grid>
+              <Grid ColumnDefinitions="230,Auto,*" RowDefinitions="Auto,Auto" RowSpacing="8">
+                <TextBlock Grid.Row="0" Grid.Column="0" Classes="field-label" Text="Segments per download" />
+                <NumericUpDown Grid.Row="0" Grid.Column="1" Classes="knob" Minimum="1" Maximum="16" Increment="1"
+                               FormatString="0" Value="{Binding SegmentsPerDownload}" />
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Classes="field-label" Text="Small-file threshold (MiB)" />
+                <NumericUpDown Grid.Row="1" Grid.Column="1" Classes="knob" Minimum="0" Maximum="1048576" Increment="1"
+                               FormatString="0.##" Value="{Binding SmallFileThresholdMiB}" />
+              </Grid>
+            </StackPanel>
+
+            <!-- Retry & timeout -->
+            <StackPanel Spacing="6">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Grid.Column="0" Classes="group-header" Text="RETRY &amp; TIMEOUT" />
+                <TextBlock Grid.Column="1" Classes="note" Text="{Binding NextAttemptNote}" />
+              </Grid>
+              <Grid ColumnDefinitions="230,Auto,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="8">
+                <TextBlock Grid.Row="0" Grid.Column="0" Classes="field-label" Text="Retry attempts" />
+                <NumericUpDown Grid.Row="0" Grid.Column="1" Classes="knob" Minimum="1" Maximum="100" Increment="1"
+                               FormatString="0" Value="{Binding MaxAttempts}" />
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Classes="field-label" Text="Backoff base (seconds)" />
+                <NumericUpDown Grid.Row="1" Grid.Column="1" Classes="knob" Minimum="0" Maximum="3600" Increment="1"
+                               FormatString="0.##" Value="{Binding BaseDelaySeconds}" />
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Classes="field-label" Text="Backoff max (seconds)" />
+                <NumericUpDown Grid.Row="2" Grid.Column="1" Classes="knob" Minimum="0" Maximum="3600" Increment="1"
+                               FormatString="0.##" Value="{Binding MaxDelaySeconds}" />
+
+                <TextBlock Grid.Row="3" Grid.Column="0" Classes="field-label" Text="Per-attempt timeout (seconds)" />
+                <NumericUpDown Grid.Row="3" Grid.Column="1" Classes="knob" Minimum="1" Maximum="3600" Increment="5"
+                               FormatString="0" Value="{Binding PerAttemptTimeoutSeconds}" />
+              </Grid>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,4,0,0">
+              <Button Content="Cancel" Command="{Binding CancelCommand}" />
+              <Button Content="Save" Classes="accent" Command="{Binding SaveCommand}" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </Border>
+
+    <!-- Add to queue -->
+    <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,12">
       <TextBox Grid.Column="0"
                Text="{Binding NewUrl}"
                PlaceholderText="https://… (http/https only)"
                VerticalAlignment="Center" />
-      <Button Grid.Column="1" Margin="8,0,0,0" Content="Add URL" Command="{Binding AddCommand}" />
+      <Button Grid.Column="1" Margin="8,0,0,0" Content="Add to queue" Classes="accent" Command="{Binding AddCommand}" />
       <Button Grid.Column="2" Margin="8,0,0,0" Content="Import URLs…" Command="{Binding ImportDialogCommand}" />
     </Grid>
 
     <!-- Import summary (skip-with-reason surface) -->
     <Border DockPanel.Dock="Top"
             IsVisible="{Binding ImportSummary, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-            Background="#1F000000" CornerRadius="4" Padding="8" Margin="0,0,0,8">
+            Background="#1F808080" CornerRadius="6" Padding="10" Margin="0,0,0,12">
       <TextBlock Text="{Binding ImportSummary}" FontFamily="monospace" TextWrapping="Wrap" />
     </Border>
 
-    <!-- Download rows -->
+    <!-- The queue: running and waiting are visually separated sections. -->
     <ScrollViewer>
-      <ItemsControl ItemsSource="{Binding Downloads}">
-        <ItemsControl.ItemTemplate>
-          <DataTemplate x:DataType="vm:DownloadItemViewModel">
-            <Border BorderBrush="#22000000" BorderThickness="0,0,0,1" Padding="6,8">
-              <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
+      <StackPanel Spacing="14">
 
-                <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="8">
-                  <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
-                  <TextBlock Text="{Binding StatusText}" Opacity="0.8" />
-                </StackPanel>
+        <StackPanel IsVisible="{Binding HasRunning}" Spacing="4">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Classes="section-header" Text="Running" />
+            <Border Classes="section-count"><TextBlock Text="{Binding Running.Count}" FontSize="11" /></Border>
+          </StackPanel>
+          <ItemsControl ItemsSource="{Binding Running}" ItemTemplate="{StaticResource DownloadRow}" />
+        </StackPanel>
 
-                <ProgressBar Grid.Row="1" Grid.Column="0" Margin="0,4"
-                             Minimum="0" Maximum="100"
-                             Value="{Binding ProgressPercent}"
-                             IsIndeterminate="{Binding IsIndeterminate}" />
+        <StackPanel IsVisible="{Binding HasWaiting}" Spacing="4">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Classes="section-header" Text="Waiting" />
+            <Border Classes="section-count"><TextBlock Text="{Binding Waiting.Count}" FontSize="11" /></Border>
+          </StackPanel>
+          <ItemsControl ItemsSource="{Binding Waiting}" ItemTemplate="{StaticResource DownloadRow}" />
+        </StackPanel>
 
-                <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" Spacing="16" Opacity="0.75">
-                  <TextBlock Text="{Binding SpeedText}" />
-                  <TextBlock Text="{Binding EtaText}" />
-                  <TextBlock Text="{Binding TargetPath}" TextTrimming="CharacterEllipsis" MaxWidth="360" />
-                </StackPanel>
+        <StackPanel IsVisible="{Binding HasFinished}" Spacing="4">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Classes="section-header" Text="Finished" />
+            <Border Classes="section-count"><TextBlock Text="{Binding Finished.Count}" FontSize="11" /></Border>
+          </StackPanel>
+          <ItemsControl ItemsSource="{Binding Finished}" ItemTemplate="{StaticResource DownloadRow}" />
+        </StackPanel>
 
-                <!-- Per-row commands: visibility reflects the state machine -->
-                <StackPanel Grid.Row="0" Grid.RowSpan="3" Grid.Column="1"
-                            Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                  <Button Content="Pause"  Command="{Binding PauseCommand}"  IsVisible="{Binding CanPause}" />
-                  <Button Content="Resume" Command="{Binding ResumeCommand}" IsVisible="{Binding CanResume}" />
-                  <Button Content="Retry"  Command="{Binding RetryCommand}"  IsVisible="{Binding CanRetry}" />
-                  <Button Content="Re-auth…" Command="{Binding ReauthorizeCommand}" IsVisible="{Binding CanReauthorize}" />
-                  <Button Content="Delete" Command="{Binding RemoveCommand}" />
-                </StackPanel>
-              </Grid>
-            </Border>
-          </DataTemplate>
-        </ItemsControl.ItemTemplate>
-      </ItemsControl>
+      </StackPanel>
     </ScrollViewer>
   </DockPanel>
 

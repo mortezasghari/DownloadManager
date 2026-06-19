@@ -22,8 +22,13 @@ public sealed record ResolvedSettings
 }
 
 /// <summary>Per-download defaults chosen by the UI when building a <c>DownloadRequest</c>.</summary>
+/// <remarks>
+/// <see cref="SegmentCount"/> is <c>set</c> rather than <c>init</c> so the queue-settings panel
+/// (Phase 8/ADR-0018) can update this shared singleton live. The view-model reads it when building each
+/// request, so a change applies to newly started downloads only.
+/// </remarks>
 public sealed record DownloadDefaults
 {
     /// <summary>Desired segment count for a new download. The engine caps this to its legal maximum.</summary>
-    public int SegmentCount { get; init; } = 8;
+    public int SegmentCount { get; set; } = 8;
 }
