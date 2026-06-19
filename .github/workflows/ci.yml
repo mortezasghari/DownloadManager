@@ -79,8 +79,10 @@ jobs:
           echo "== shipped bundle (${{ matrix.rid }}) =="; ls -la "$PUB"
           echo "== separated symbols (${{ matrix.rid }}) =="; ls -la "$SYM"
 
-      # Headless native self-test on EVERY RID: runs the published binary with --smoke (no display),
-      # which exercises and proves the platform's native preallocation P/Invoke executed.
+      # Headless native self-test on EVERY RID: runs the published binary with --smoke (no display).
+      # It proves two AOT-fragile paths in the real native image: (1) settings.json is written and
+      # deserialized via the source-gen context — a reflection binder would pass JIT tests and fail only
+      # here (ADR-0016); (2) the platform's native preallocation P/Invoke executed (ADR-0006).
       - name: Self-test native binary (--smoke, all RIDs)
         shell: bash
         run: |
@@ -161,7 +163,8 @@ jobs:
           echo "== shipped bundle (osx-x64) =="; ls -la "$PUB"
           echo "== separated symbols (osx-x64) =="; ls -la "$SYM"
 
-      # The x64 proof: run the actual x86_64 native binary under Rosetta. Prints the F_PREALLOCATE line.
+      # The x64 proof: run the actual x86_64 native binary under Rosetta. Exercises source-gen config
+      # load (ADR-0016) and prints the F_PREALLOCATE line (ADR-0006).
       - name: Self-test native binary (--smoke as x86_64)
         run: arch -x86_64 artifacts/publish/osx-x64/DownloadManager.UI --smoke
 
