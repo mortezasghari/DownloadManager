@@ -59,6 +59,8 @@ internal static class Program
         services.AddSingleton<IAppInfoService, AppInfoService>();
         services.AddSingleton<IFilePicker, AvaloniaFilePicker>();
         services.AddSingleton<ICredentialPrompt, AvaloniaCredentialPrompt>();
+        services.AddSingleton<IClipboardTextSource, AvaloniaClipboardTextSource>();
+        services.AddSingleton<IImportDialog, AvaloniaImportDialog>();
         services.AddTransient<MainWindowViewModel>();
 
         // Engine composition root. Options are plain singletons for now; an Options/IConfiguration

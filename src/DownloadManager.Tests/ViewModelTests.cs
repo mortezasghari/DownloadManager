@@ -247,6 +247,43 @@ public class ViewModelTests
     }
 
     [Fact]
+    public async Task Delete_routes_a_live_download_through_the_scheduler_cancel_path_and_drops_the_row()
+    {
+        var scheduler = new FakeUiScheduler();
+        var vm = NewMainVm(scheduler);
+        vm.NewUrl = "http://origin.test/file.bin";
+        await vm.AddCurrentUrlAsync();
+        var item = Assert.Single(vm.Downloads);
+        ((FakeDownloadHandle)scheduler.Find(item.Id)!).Status = DownloadStatus.Running;
+        item.Refresh();
+
+        await vm.RemoveAsync(item);
+
+        Assert.Contains(item.Id, scheduler.Canceled); // dispatched via the existing Cancel path
+        Assert.Empty(vm.Downloads);                    // row dropped
+    }
+
+    [Fact]
+    public async Task Import_dialog_add_path_enqueues_through_the_normal_queue()
+    {
+        var scheduler = new FakeUiScheduler();
+        var dialog = new FakeImportDialog();
+        var vm = new MainWindowViewModel(
+            scheduler, new FakeTimeProvider(), new FakeFilePicker(null), new FakeCredentialPrompt(null),
+            dialog, NullLogger<MainWindowViewModel>.Instance,
+            downloadsDirectory: Path.Combine(Path.GetTempPath(), "dlm-vm-tests", Guid.NewGuid().ToString("N")));
+
+        vm.ImportDialogCommand.Execute(null); // FakeImportDialog.ShowAsync completes synchronously
+        Assert.NotNull(dialog.CapturedAddToQueue);
+
+        // Drive the captured add-path as the dialog would on "Add to Queue".
+        await dialog.CapturedAddToQueue!([new Uri("https://example.test/x"), new Uri("https://example.test/y")]);
+
+        Assert.Equal(2, vm.Downloads.Count);
+        Assert.Equal(2, scheduler.Enqueued.Count);
+    }
+
+    [Fact]
     public void Add_command_disabled_for_non_http_input()
     {
         var vm = NewMainVm(new FakeUiScheduler());
@@ -264,6 +301,7 @@ public class ViewModelTests
             new FakeTimeProvider(),
             new FakeFilePicker(filePath),
             new FakeCredentialPrompt(credentials),
+            new FakeImportDialog(),
             NullLogger<MainWindowViewModel>.Instance,
             downloadsDirectory: Path.Combine(Path.GetTempPath(), "dlm-vm-tests", Guid.NewGuid().ToString("N")));
 }

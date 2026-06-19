@@ -1,0 +1,52 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="clr-namespace:DownloadManager.UI.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="520" d:DesignHeight="520"
+        x:Class="DownloadManager.UI.Views.ImportDialog"
+        x:DataType="vm:ImportDialogViewModel"
+        Title="Import URLs"
+        Width="520" Height="520"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True">
+
+  <DockPanel Margin="12">
+
+    <TextBlock DockPanel.Dock="Top" Margin="0,0,0,6"
+               Text="Paste URLs (one per line). http/https only; blank lines and # comments are ignored." TextWrapping="Wrap" />
+
+    <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="0,0,0,6">
+      <TextBox Grid.Column="0" Height="110"
+               AcceptsReturn="True" TextWrapping="NoWrap"
+               VerticalContentAlignment="Top"
+               Text="{Binding RawText}"
+               PlaceholderText="https://example/a.bin&#x0a;https://example/b.bin" />
+      <Button Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Top"
+              Content="Paste" Command="{Binding PasteFromClipboardCommand}" />
+    </Grid>
+
+    <TextBlock DockPanel.Dock="Top" Margin="0,0,0,6"
+               Text="{Binding Summary}" FontFamily="monospace" TextWrapping="Wrap" Opacity="0.85" />
+
+    <!-- Action bar pinned to the bottom -->
+    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,8,0,0">
+      <Button Content="Cancel" Command="{Binding CancelCommand}" IsCancel="True" />
+      <Button Content="Add to Queue" Command="{Binding AddToQueueCommand}" IsDefault="True" />
+    </StackPanel>
+
+    <!-- Checklist of parsed URLs -->
+    <ScrollViewer>
+      <ItemsControl ItemsSource="{Binding Candidates}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:ImportCandidate">
+            <CheckBox Margin="0,2"
+                      IsChecked="{Binding IsSelected}"
+                      Content="{Binding Display}" />
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </ScrollViewer>
+  </DockPanel>
+
+</Window>
