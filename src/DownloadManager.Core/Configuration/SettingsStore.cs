@@ -83,63 +83,152 @@ public static partial class SettingsStore
         return Validate(settings, userProfile, logger);
     }
 
-    private static ResolvedSettings Validate(AppSettings settings, string userProfile, ILogger logger)
+    /// <summary>
+    /// Read the persisted settings into the raw <see cref="AppSettings"/> shape <b>without</b> writing,
+    /// clamping, or projecting — for the settings UI to load current values, overlay edits, and hand back
+    /// to <see cref="Save"/>. Missing or malformed files yield defaults (no write).
+    /// </summary>
+    public static AppSettings ReadRaw(string settingsPath)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(settingsPath);
+        if (!File.Exists(settingsPath))
+        {
+            return AppSettings.CreateDefault();
+        }
+
+        try
+        {
+            var json = File.ReadAllText(settingsPath);
+            return JsonSerializer.Deserialize(json, AppSettingsJsonContext.Default.AppSettings)
+                ?? AppSettings.CreateDefault();
+        }
+        catch (Exception ex) when (ex is JsonException or IOException)
+        {
+            return AppSettings.CreateDefault();
+        }
+    }
+
+    /// <summary>
+    /// Persist edited settings (ADR-0018). The whole set is clamped through the same path config-load
+    /// uses, so the UI can never persist a value the loader would reject; the <b>clamped</b> form is what
+    /// is written and what the returned <see cref="ResolvedSettings"/> reflects. Routing and file-only
+    /// advanced knobs in <paramref name="settings"/> pass through untouched.
+    /// </summary>
+    public static ResolvedSettings Save(string settingsPath, AppSettings settings, ILogger logger, string? userProfile = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(settingsPath);
+        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(logger);
+        userProfile ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        var clamped = Clamp(settings, logger);
+        WriteFile(settingsPath, clamped, logger);
+        return Project(clamped, userProfile);
+    }
+
+    private static ResolvedSettings Validate(AppSettings settings, string userProfile, ILogger logger) =>
+        Project(Clamp(settings, logger), userProfile);
+
+    /// <summary>Clamp every numeric knob to its legal range (warning on change); routing/comment pass through.</summary>
+    private static AppSettings Clamp(AppSettings settings, ILogger logger)
     {
         var scheduler = settings.Scheduler ?? new SchedulerSettings();
         var engine = settings.Engine ?? new EngineSettings();
         var retry = settings.Retry ?? new RetrySettings();
-        var routing = settings.Routing ?? RoutingSettings.CreateDefault();
 
         var maxSegments = ClampInt(logger, "engine.maxSegmentsPerDownload", engine.MaxSegmentsPerDownload, MinSegments, MaxSegments);
         var baseDelay = ClampDouble(logger, "retry.baseDelaySeconds", retry.BaseDelaySeconds, MinDelaySeconds, MaxDelaySeconds);
         // Max backoff must be at least the base delay, otherwise the bound is incoherent.
         var maxDelay = ClampDouble(logger, "retry.maxDelaySeconds", retry.MaxDelaySeconds, baseDelay, MaxDelaySeconds);
 
-        return new ResolvedSettings
+        return new AppSettings
         {
-            Scheduler = new SchedulerOptions
+            Comment = settings.Comment,
+            Scheduler = new SchedulerSettings
             {
                 MaxConcurrentDownloads = ClampInt(logger, "scheduler.maxConcurrentDownloads", scheduler.MaxConcurrentDownloads, MinConcurrent, MaxConcurrent),
                 QueueCapacity = ClampInt(logger, "scheduler.queueCapacity", scheduler.QueueCapacity, MinQueueCapacity, MaxQueueCapacity),
             },
-            Engine = new EngineOptions
-            {
-                CopyBufferSize = ClampInt(logger, "engine.copyBufferBytes", engine.CopyBufferBytes, MinCopyBuffer, MaxCopyBuffer),
-                CheckpointIntervalBytes = ClampLong(logger, "engine.checkpointIntervalBytes", engine.CheckpointIntervalBytes, MinCheckpoint, MaxCheckpoint),
-                PerAttemptTimeout = TimeSpan.FromSeconds(ClampInt(logger, "engine.perAttemptTimeoutSeconds", engine.PerAttemptTimeoutSeconds, MinAttemptTimeout, MaxAttemptTimeout)),
-                MaxSegmentsPerDownload = maxSegments,
-                SmallFileThresholdBytes = ClampLong(logger, "engine.smallFileThresholdBytes", engine.SmallFileThresholdBytes, 0, long.MaxValue),
-            },
-            Retry = new RetryOptions
-            {
-                MaxAttempts = ClampInt(logger, "retry.maxAttempts", retry.MaxAttempts, MinAttempts, MaxAttempts),
-                BaseDelay = TimeSpan.FromSeconds(baseDelay),
-                MaxDelay = TimeSpan.FromSeconds(maxDelay),
-                JitterFactor = ClampDouble(logger, "retry.jitterFactor", retry.JitterFactor, MinJitter, MaxJitter),
-            },
-            Routing = RoutingOptions.FromSettings(routing, userProfile),
-            Defaults = new DownloadDefaults
+            Engine = new EngineSettings
             {
                 // Requested default is also bounded by the (clamped) hard segment cap.
-                SegmentCount = ClampInt(logger, "engine.segmentsPerDownload", engine.SegmentsPerDownload, MinSegments, maxSegments),
+                SegmentsPerDownload = ClampInt(logger, "engine.segmentsPerDownload", engine.SegmentsPerDownload, MinSegments, maxSegments),
+                MaxSegmentsPerDownload = maxSegments,
+                SmallFileThresholdBytes = ClampLong(logger, "engine.smallFileThresholdBytes", engine.SmallFileThresholdBytes, 0, long.MaxValue),
+                CopyBufferBytes = ClampInt(logger, "engine.copyBufferBytes", engine.CopyBufferBytes, MinCopyBuffer, MaxCopyBuffer),
+                CheckpointIntervalBytes = ClampLong(logger, "engine.checkpointIntervalBytes", engine.CheckpointIntervalBytes, MinCheckpoint, MaxCheckpoint),
+                PerAttemptTimeoutSeconds = ClampInt(logger, "engine.perAttemptTimeoutSeconds", engine.PerAttemptTimeoutSeconds, MinAttemptTimeout, MaxAttemptTimeout),
             },
+            Retry = new RetrySettings
+            {
+                MaxAttempts = ClampInt(logger, "retry.maxAttempts", retry.MaxAttempts, MinAttempts, MaxAttempts),
+                BaseDelaySeconds = baseDelay,
+                MaxDelaySeconds = maxDelay,
+                JitterFactor = ClampDouble(logger, "retry.jitterFactor", retry.JitterFactor, MinJitter, MaxJitter),
+            },
+            Routing = settings.Routing ?? RoutingSettings.CreateDefault(),
         };
     }
 
+    /// <summary>Project an already-clamped raw settings into the engine-ready option records.</summary>
+    private static ResolvedSettings Project(AppSettings clamped, string userProfile) => new()
+    {
+        Scheduler = new SchedulerOptions
+        {
+            MaxConcurrentDownloads = clamped.Scheduler.MaxConcurrentDownloads,
+            QueueCapacity = clamped.Scheduler.QueueCapacity,
+        },
+        Engine = new EngineOptions
+        {
+            CopyBufferSize = clamped.Engine.CopyBufferBytes,
+            CheckpointIntervalBytes = clamped.Engine.CheckpointIntervalBytes,
+            PerAttemptTimeout = TimeSpan.FromSeconds(clamped.Engine.PerAttemptTimeoutSeconds),
+            MaxSegmentsPerDownload = clamped.Engine.MaxSegmentsPerDownload,
+            SmallFileThresholdBytes = clamped.Engine.SmallFileThresholdBytes,
+        },
+        Retry = new RetryOptions
+        {
+            MaxAttempts = clamped.Retry.MaxAttempts,
+            BaseDelay = TimeSpan.FromSeconds(clamped.Retry.BaseDelaySeconds),
+            MaxDelay = TimeSpan.FromSeconds(clamped.Retry.MaxDelaySeconds),
+            JitterFactor = clamped.Retry.JitterFactor,
+        },
+        Routing = RoutingOptions.FromSettings(clamped.Routing, userProfile),
+        Defaults = new DownloadDefaults { SegmentCount = clamped.Engine.SegmentsPerDownload },
+    };
+
     private static void TryWriteDefault(string settingsPath, AppSettings settings, ILogger logger)
+    {
+        if (WriteFile(settingsPath, settings, logger))
+        {
+            // README sibling is best-effort and only seeded on first run.
+            try
+            {
+                File.WriteAllText(Path.Combine(Path.GetDirectoryName(settingsPath)!, "settings.README.md"), ReadmeText);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                LogWriteFailed(logger, settingsPath, ex.Message);
+            }
+
+            LogCreatedDefault(logger, settingsPath);
+        }
+    }
+
+    /// <summary>Write settings.json, creating the directory. Returns false (with a warning) if it cannot.</summary>
+    private static bool WriteFile(string settingsPath, AppSettings settings, ILogger logger)
     {
         try
         {
-            var directory = Path.GetDirectoryName(settingsPath)!;
-            Directory.CreateDirectory(directory);
+            Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
             File.WriteAllText(settingsPath, JsonSerializer.Serialize(settings, AppSettingsJsonContext.Default.AppSettings));
-            File.WriteAllText(Path.Combine(directory, "settings.README.md"), ReadmeText);
-            LogCreatedDefault(logger, settingsPath);
+            return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Can't persist the default file (read-only home, etc.) — defaults still apply in-memory.
+            // Can't persist (read-only home, etc.) — in-memory values still apply.
             LogWriteFailed(logger, settingsPath, ex.Message);
+            return false;
         }
     }
 

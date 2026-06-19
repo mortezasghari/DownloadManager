@@ -125,6 +125,14 @@ public sealed class DownloadItemViewModel : ObservableObject
     public bool IsActive =>
         _status is DownloadStatus.Queued or DownloadStatus.Running or DownloadStatus.Retrying;
 
+    /// <summary>Which queue section this row belongs to (Phase 8) — drives the running/waiting split.</summary>
+    public QueueSection Section => _status switch
+    {
+        DownloadStatus.Running or DownloadStatus.Retrying => QueueSection.Running,
+        DownloadStatus.Queued => QueueSection.Waiting,
+        _ => QueueSection.Finished,
+    };
+
     /// <summary>
     /// Polls the handle and recomputes derived display state. Called on the UI thread from the refresh
     /// timer (and directly from tests with a <c>FakeTimeProvider</c>). Lock-free; no engine work.
@@ -174,6 +182,7 @@ public sealed class DownloadItemViewModel : ObservableObject
         if (stateChanged)
         {
             UpdateCommandStates();
+            OnPropertyChanged(nameof(Section));
         }
     }
 

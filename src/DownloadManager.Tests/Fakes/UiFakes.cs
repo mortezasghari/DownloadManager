@@ -71,6 +71,17 @@ internal sealed class FakeUiScheduler : IDownloadScheduler
 
     public IDownloadHandle? Find(DownloadId id) => _handles.GetValueOrDefault(id);
 
+    /// <summary>Records the concurrency the panel applied; starts at 3 (the default).</summary>
+    public int MaxConcurrency { get; private set; } = 3;
+
+    public List<int> ConcurrencyChanges { get; } = [];
+
+    public void SetMaxConcurrency(int maxConcurrentDownloads)
+    {
+        MaxConcurrency = maxConcurrentDownloads;
+        ConcurrencyChanges.Add(maxConcurrentDownloads);
+    }
+
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 

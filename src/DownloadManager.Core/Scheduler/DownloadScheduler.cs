@@ -24,7 +24,13 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
     private readonly ConcurrentDictionary<DownloadId, DownloadHandle> _handles = new();
     private readonly Channel<DownloadId> _queue;
     private readonly CancellationTokenSource _shutdown = new();
-    private readonly Task[] _workers;
+
+    // The concurrency gate IS the live worker count. Resizing (Phase 8) spawns or retires workers under
+    // this lock; a retired worker leaves only between downloads, never mid-run.
+    private readonly object _concurrencyLock = new();
+    private readonly List<Task> _workers = [];
+    private int _targetConcurrency;
+    private int _aliveWorkers;
 
     public DownloadScheduler(
         IDownloadEngine engine,
@@ -45,11 +51,51 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
             FullMode = BoundedChannelFullMode.Wait,
         });
 
-        var concurrency = Math.Max(1, options.MaxConcurrentDownloads);
-        _workers = new Task[concurrency];
-        for (var i = 0; i < concurrency; i++)
+        SetMaxConcurrency(options.MaxConcurrentDownloads);
+    }
+
+    public int MaxConcurrency
+    {
+        get
         {
-            _workers[i] = Task.Run(WorkerLoopAsync);
+            lock (_concurrencyLock)
+            {
+                return _targetConcurrency;
+            }
+        }
+    }
+
+    public void SetMaxConcurrency(int maxConcurrentDownloads)
+    {
+        var target = Math.Max(1, maxConcurrentDownloads);
+        lock (_concurrencyLock)
+        {
+            _targetConcurrency = target;
+
+            // Raise immediately by spawning workers (a waiting download starts at once); lowering is lazy —
+            // workers retire between downloads via TryRetire, so a running download is never killed.
+            while (_aliveWorkers < _targetConcurrency)
+            {
+                _aliveWorkers++;
+                _workers.Add(Task.Run(WorkerLoopAsync));
+            }
+        }
+
+        LogConcurrency(target);
+    }
+
+    /// <summary>A worker leaves the pool iff the live count exceeds the target (a lowering took effect).</summary>
+    private bool TryRetire()
+    {
+        lock (_concurrencyLock)
+        {
+            if (_aliveWorkers > _targetConcurrency)
+            {
+                _aliveWorkers--;
+                return true;
+            }
+
+            return false;
         }
     }
 
@@ -112,9 +158,15 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
         await _shutdown.CancelAsync().ConfigureAwait(false);
         _queue.Writer.TryComplete();
 
+        Task[] workers;
+        lock (_concurrencyLock)
+        {
+            workers = [.. _workers];
+        }
+
         try
         {
-            await Task.WhenAll(_workers).ConfigureAwait(false);
+            await Task.WhenAll(workers).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -138,9 +190,17 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
     {
         try
         {
-            await foreach (var id in _queue.Reader.ReadAllAsync(_shutdown.Token).ConfigureAwait(false))
+            var reader = _queue.Reader;
+            while (await reader.WaitToReadAsync(_shutdown.Token).ConfigureAwait(false))
             {
-                if (!_handles.TryGetValue(id, out var handle))
+                // A lowering takes effect here, before taking new work — never mid-run. The item we did
+                // not take stays in the channel for a surviving worker.
+                if (TryRetire())
+                {
+                    return;
+                }
+
+                if (!reader.TryRead(out var id) || !_handles.TryGetValue(id, out var handle))
                 {
                     continue;
                 }
@@ -152,6 +212,12 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
                 }
 
                 await ProcessAsync(handle, token).ConfigureAwait(false);
+
+                // Finished a download: retire now if a lowering left us over target.
+                if (TryRetire())
+                {
+                    return;
+                }
             }
         }
         catch (OperationCanceledException)
@@ -245,6 +311,9 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
             handle.DisposeRunCts();
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Concurrency gate set to {Target}.")]
+    private partial void LogConcurrency(int target);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Download {Id} enqueued.")]
     private partial void LogEnqueued(DownloadId id);
