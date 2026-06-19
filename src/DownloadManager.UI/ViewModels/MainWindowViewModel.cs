@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
+using DownloadManager.Core.Configuration;
 using DownloadManager.Core.Domain;
 using DownloadManager.Core.Import;
+using DownloadManager.Core.Routing;
 using DownloadManager.Core.Scheduler;
 using DownloadManager.UI.Services;
 using Microsoft.Extensions.Logging;
@@ -20,7 +22,8 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private readonly ICredentialPrompt _credentialPrompt;
     private readonly ILogger<MainWindowViewModel> _logger;
     private readonly TimeSpan? _speedWindow;
-    private readonly int _defaultSegmentCount = 8;
+    private readonly IFileRouter? _router;
+    private readonly int _defaultSegmentCount;
 
     private string _newUrl = string.Empty;
     private string _importSummary = string.Empty;
@@ -32,7 +35,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
         ICredentialPrompt credentialPrompt,
         ILogger<MainWindowViewModel> logger,
         string? downloadsDirectory = null,
-        TimeSpan? speedWindow = null)
+        TimeSpan? speedWindow = null,
+        IFileRouter? router = null,
+        DownloadDefaults? defaults = null)
     {
         _scheduler = scheduler;
         _timeProvider = timeProvider;
@@ -40,6 +45,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _credentialPrompt = credentialPrompt;
         _logger = logger;
         _speedWindow = speedWindow;
+        // Routing (ADR-0017) chooses the per-download destination by extension. When no router is
+        // injected (headless tests), fall back to the flat Downloads directory.
+        _router = router;
+        _defaultSegmentCount = defaults?.SegmentCount ?? 8;
         DownloadsDirectory = downloadsDirectory
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
 
@@ -174,12 +183,11 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     private async Task EnqueueAsync(Uri url, DownloadCredentials credentials)
     {
-        Directory.CreateDirectory(DownloadsDirectory);
         var request = new DownloadRequest
         {
             Id = DownloadId.New(),
             Url = url,
-            TargetPath = Path.Combine(DownloadsDirectory, FileNameFor(url)),
+            TargetPath = ResolveTargetPath(url),
             SegmentCount = _defaultSegmentCount,
             Credentials = credentials,
         };
@@ -187,6 +195,19 @@ public sealed partial class MainWindowViewModel : ObservableObject
         var handle = await _scheduler.EnqueueAsync(request).ConfigureAwait(true);
         Downloads.Add(NewItem(request, handle));
         LogEnqueued(request.Id, url);
+    }
+
+    /// <summary>Extension routing (ADR-0017) when a router is present; otherwise the flat Downloads folder.</summary>
+    private string ResolveTargetPath(Uri url)
+    {
+        var fileName = FileNameFor(url);
+        if (_router is not null)
+        {
+            return _router.ResolveDestination(fileName, explicitPath: null);
+        }
+
+        Directory.CreateDirectory(DownloadsDirectory);
+        return Path.Combine(DownloadsDirectory, fileName);
     }
 
     private DownloadItemViewModel NewItem(DownloadRequest request, IDownloadHandle handle) =>

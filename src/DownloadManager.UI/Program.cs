@@ -5,6 +5,7 @@ using DownloadManager.Core.Configuration;
 using DownloadManager.Core.Engine;
 using DownloadManager.Core.Http;
 using DownloadManager.Core.Recovery;
+using DownloadManager.Core.Routing;
 using DownloadManager.Core.Scheduler;
 using DownloadManager.Persistence.Io;
 using DownloadManager.Persistence.Metadata;
@@ -61,14 +62,21 @@ internal static class Program
         services.AddSingleton<ICredentialPrompt, AvaloniaCredentialPrompt>();
         services.AddTransient<MainWindowViewModel>();
 
-        // Engine composition root. Options are plain singletons for now; an Options/IConfiguration
-        // binding pass comes with the real UI (Phase 5).
+        // Engine composition root. Tunables come from the user-editable settings.json, loaded once via
+        // the source-gen context (ADR-0016) — never the reflection binder, which throws under AOT. The
+        // load is a factory so its clamp/first-run warnings flow through the DI logger; the option
+        // records and routing map are projected out of the single resolved result.
         services.AddSingleton(TimeProvider.System);
-        services.AddSingleton(new EngineOptions());
+        services.AddSingleton(sp =>
+            SettingsStore.LoadOrCreate(sp.GetRequiredService<ILoggerFactory>().CreateLogger("SettingsStore")));
+        services.AddSingleton(sp => sp.GetRequiredService<ResolvedSettings>().Engine);
+        services.AddSingleton(sp => sp.GetRequiredService<ResolvedSettings>().Scheduler);
+        services.AddSingleton(sp => sp.GetRequiredService<ResolvedSettings>().Retry);
+        services.AddSingleton(sp => sp.GetRequiredService<ResolvedSettings>().Defaults);
+        services.AddSingleton(sp => sp.GetRequiredService<ResolvedSettings>().Routing);
+        services.AddSingleton<IFileRouter, FileRouter>();
         services.AddSingleton(new HttpOptions());
         services.AddSingleton(new ProgressLogOptions());
-        services.AddSingleton(new SchedulerOptions());
-        services.AddSingleton(new RetryOptions());
 
         services.AddSingleton<SharedHttpClient>();
         services.AddSingleton(sp => sp.GetRequiredService<SharedHttpClient>().Client);
