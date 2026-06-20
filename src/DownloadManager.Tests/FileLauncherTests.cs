@@ -4,8 +4,9 @@ using Xunit;
 namespace DownloadManager.Tests;
 
 /// <summary>
-/// Phase 9 / ADR-0019: the per-platform open / reveal command construction. The one genuinely per-OS
-/// code in this phase — verified for every RID here (pure command building, no GUI launch needed).
+/// Per-platform open / reveal command construction (ADR-0019), now asserting the argv <b>list</b> after
+/// the F2 hardening (ADR-0020): arguments are discrete tokens, never a hand-quoted string, so a filename
+/// containing a quote cannot inject flags. Verified for every RID here (pure command building).
 /// </summary>
 public class FileLauncherTests
 {
@@ -17,7 +18,7 @@ public class FileLauncherTests
         var cmd = LaunchCommands.OpenFile(LaunchOs.Linux, Path);
 
         Assert.Equal("xdg-open", cmd.FileName);
-        Assert.Equal("\"/home/u/Downloads/video.mp4\"", cmd.Arguments);
+        Assert.Equal([Path], cmd.Arguments);
         Assert.False(cmd.UseShellExecute);
     }
 
@@ -27,12 +28,8 @@ public class FileLauncherTests
         var cmd = LaunchCommands.RevealInFolder(LaunchOs.Linux, Path);
 
         Assert.Equal("xdg-open", cmd.FileName);
-        // The directory, not the file. Computed host-aware (GetDirectoryName uses the host separator) so
-        // this asserts identically on a Windows or Linux test runner; at runtime Linux reveal only ever
-        // runs on Linux, where the separators are '/'.
-        var expectedDir = System.IO.Path.GetDirectoryName(Path)!;
-        Assert.Equal($"\"{expectedDir}\"", cmd.Arguments);
-        Assert.DoesNotContain("video.mp4", cmd.Arguments);
+        var expectedDir = System.IO.Path.GetDirectoryName(Path)!; // host-aware (separators)
+        Assert.Equal([expectedDir], cmd.Arguments); // the directory, not the file
         Assert.False(cmd.UseShellExecute);
     }
 
@@ -43,16 +40,17 @@ public class FileLauncherTests
 
         Assert.Equal(@"C:\Users\u\Downloads\video.mp4", cmd.FileName);
         Assert.True(cmd.UseShellExecute);
-        Assert.Equal(string.Empty, cmd.Arguments);
+        Assert.Empty(cmd.Arguments);
     }
 
     [Fact]
-    public void Windows_reveal_uses_explorer_select_with_the_quoted_path()
+    public void Windows_reveal_uses_explorer_select_as_a_single_argv_token()
     {
         var cmd = LaunchCommands.RevealInFolder(LaunchOs.Windows, @"C:\Users\u\Downloads\video.mp4");
 
         Assert.Equal("explorer.exe", cmd.FileName);
-        Assert.Equal("/select,\"C:\\Users\\u\\Downloads\\video.mp4\"", cmd.Arguments);
+        // One token: "/select,<path>". .NET escapes it for argv; no hand-rolled quoting.
+        Assert.Equal([@"/select,C:\Users\u\Downloads\video.mp4"], cmd.Arguments);
         Assert.False(cmd.UseShellExecute);
     }
 
@@ -62,7 +60,7 @@ public class FileLauncherTests
         var cmd = LaunchCommands.OpenFile(LaunchOs.MacOS, Path);
 
         Assert.Equal("open", cmd.FileName);
-        Assert.Equal("\"/home/u/Downloads/video.mp4\"", cmd.Arguments);
+        Assert.Equal([Path], cmd.Arguments);
         Assert.False(cmd.UseShellExecute);
     }
 
@@ -72,8 +70,37 @@ public class FileLauncherTests
         var cmd = LaunchCommands.RevealInFolder(LaunchOs.MacOS, Path);
 
         Assert.Equal("open", cmd.FileName);
-        Assert.Equal("-R \"/home/u/Downloads/video.mp4\"", cmd.Arguments);
+        Assert.Equal(["-R", Path], cmd.Arguments); // two discrete tokens
         Assert.False(cmd.UseShellExecute);
+    }
+
+    // ---- F2 regression: a filename with an embedded quote cannot inject extra args/flags ----
+
+    [Theory]
+    [InlineData(LaunchOs.Linux)]
+    [InlineData(LaunchOs.MacOS)]
+    public void Embedded_quote_in_filename_stays_a_single_argv_token_open(LaunchOs os)
+    {
+        // The exact audit exploit: a path containing a quote + " -a App" that previously split into argv.
+        var evilPath = "/home/u/Downloads/a\" -a Calculator \"b.mp4";
+
+        var cmd = LaunchCommands.OpenFile(os, evilPath);
+
+        // The whole malicious path is ONE token — no -a / Calculator injected.
+        Assert.Equal([evilPath], cmd.Arguments);
+        Assert.DoesNotContain("-a", cmd.Arguments);
+        Assert.DoesNotContain("Calculator", cmd.Arguments);
+    }
+
+    [Fact]
+    public void Embedded_quote_in_filename_stays_a_single_argv_token_macos_reveal()
+    {
+        var evilPath = "/home/u/Downloads/a\" -a Calculator \"b.mp4";
+
+        var cmd = LaunchCommands.RevealInFolder(LaunchOs.MacOS, evilPath);
+
+        Assert.Equal(["-R", evilPath], cmd.Arguments); // -R then the whole path as ONE token
+        Assert.DoesNotContain("Calculator", cmd.Arguments);
     }
 
     [Fact]

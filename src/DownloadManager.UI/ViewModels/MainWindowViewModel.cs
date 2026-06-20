@@ -3,6 +3,7 @@ using DownloadManager.Core.Abstractions;
 using DownloadManager.Core.Configuration;
 using DownloadManager.Core.Domain;
 using DownloadManager.Core.History;
+using DownloadManager.Core.Http;
 using DownloadManager.Core.Import;
 using DownloadManager.Core.Routing;
 using DownloadManager.Core.Scheduler;
@@ -291,7 +292,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
         var handle = await _scheduler.EnqueueAsync(request).ConfigureAwait(true);
         AddRow(NewItem(request, handle), Downloads.Count);
-        LogEnqueued(request.Id, url);
+        LogEnqueued(request.Id, UrlRedaction.Redact(url));
     }
 
     /// <summary>Add a row to the master list and its current section bucket (Phase 8).</summary>
@@ -357,8 +358,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
             return _router.ResolveDestination(fileName, explicitPath: null);
         }
 
+        // No router (headless): still sanitize the untrusted name to a safe leaf before it becomes a path.
         Directory.CreateDirectory(DownloadsDirectory);
-        return Path.Combine(DownloadsDirectory, fileName);
+        return Path.Combine(DownloadsDirectory, SafeFileName.Sanitize(fileName));
     }
 
     private DownloadItemViewModel NewItem(DownloadRequest request, IDownloadHandle handle) =>
@@ -392,7 +394,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         status is DownloadStatus.Completed or DownloadStatus.Failed or DownloadStatus.Canceled;
 
     [LoggerMessage(Level = LogLevel.Information, Message = "UI enqueued download {Id} for {Url}.")]
-    private partial void LogEnqueued(DownloadId id, Uri url);
+    private partial void LogEnqueued(DownloadId id, string url);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "UI imported {Imported} URL(s), skipped {Skipped} from {Path}.")]
     private partial void LogImported(int imported, int skipped, string path);

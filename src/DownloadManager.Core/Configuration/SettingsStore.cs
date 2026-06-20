@@ -158,6 +158,7 @@ public static partial class SettingsStore
                 CopyBufferBytes = ClampInt(logger, "engine.copyBufferBytes", engine.CopyBufferBytes, MinCopyBuffer, MaxCopyBuffer),
                 CheckpointIntervalBytes = ClampLong(logger, "engine.checkpointIntervalBytes", engine.CheckpointIntervalBytes, MinCheckpoint, MaxCheckpoint),
                 PerAttemptTimeoutSeconds = ClampInt(logger, "engine.perAttemptTimeoutSeconds", engine.PerAttemptTimeoutSeconds, MinAttemptTimeout, MaxAttemptTimeout),
+                MaxFullPreallocationBytes = ClampLong(logger, "engine.maxFullPreallocationBytes", engine.MaxFullPreallocationBytes, 0, long.MaxValue),
             },
             Retry = new RetrySettings
             {
@@ -185,6 +186,7 @@ public static partial class SettingsStore
             PerAttemptTimeout = TimeSpan.FromSeconds(clamped.Engine.PerAttemptTimeoutSeconds),
             MaxSegmentsPerDownload = clamped.Engine.MaxSegmentsPerDownload,
             SmallFileThresholdBytes = clamped.Engine.SmallFileThresholdBytes,
+            MaxFullPreallocationBytes = clamped.Engine.MaxFullPreallocationBytes,
         },
         Retry = new RetryOptions
         {
@@ -299,6 +301,8 @@ public static partial class SettingsStore
         - `copyBufferBytes` — network→disk copy buffer. Range [4 KiB, 8 MiB]. Default 128 KiB.
         - `checkpointIntervalBytes` — bytes between durable fsync checkpoints. Range [64 KiB, 1 GiB].
         - `perAttemptTimeoutSeconds` — max time for one attempt. Range [1, 3600]. Default 100.
+        - `maxFullPreallocationBytes` — cap on bytes reserved up front by Full preallocation; a larger
+          server-advertised size (or one above most of the free disk) falls back to sparse. Default 16 GiB.
 
         ## retry
         - `maxAttempts` — total attempts including the first. Range [1, 100]. Default 5.

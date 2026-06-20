@@ -89,14 +89,24 @@ public sealed class FileRouterTests : IDisposable
     }
 
     [Fact]
-    public void Explicit_per_download_path_overrides_routing()
+    public void Explicit_per_download_path_inside_a_destination_overrides_routing()
     {
-        var explicitPath = Path.Combine(_home, "somewhere", "exact.mp4");
+        // An explicit destination INSIDE a configured download folder is honored (and canonicalized).
+        var explicitPath = Path.Combine(Folder("Downloads"), "exact.mp4");
 
         var path = DefaultRouter().ResolveDestination("exact.mp4", explicitPath);
 
-        Assert.Equal(explicitPath, path);
+        Assert.Equal(Path.GetFullPath(explicitPath), path);
         Assert.False(Directory.Exists(Folder(OperatingSystem.IsMacOS() ? "Movies" : "Videos")));
+    }
+
+    [Fact]
+    public void Explicit_per_download_path_outside_every_destination_is_rejected()
+    {
+        // Hardened (ADR-0020 / audit F1): an explicit path that escapes all configured folders is rejected.
+        var escaping = Path.Combine(_home, "somewhere-else", "exact.mp4");
+
+        Assert.Throws<PathContainmentException>(() => DefaultRouter().ResolveDestination("exact.mp4", escaping));
     }
 
     [Fact]

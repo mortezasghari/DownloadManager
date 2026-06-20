@@ -64,6 +64,12 @@ public sealed class EngineSettings
     public long CheckpointIntervalBytes { get; set; } = 8L * 1024 * 1024;
 
     public int PerAttemptTimeoutSeconds { get; set; } = 100;
+
+    /// <summary>
+    /// Upper bound on bytes reserved by <b>Full</b> preallocation (ADR-0020, audit F6). A server-advertised
+    /// size above this (or above most of the free disk) falls back to sparse instead of reserving up front.
+    /// </summary>
+    public long MaxFullPreallocationBytes { get; set; } = 16L * 1024 * 1024 * 1024;
 }
 
 /// <summary>Retry/backoff knobs. See <see cref="RetryOptions"/>.</summary>

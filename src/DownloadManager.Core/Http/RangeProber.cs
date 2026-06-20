@@ -49,14 +49,14 @@ public sealed partial class RangeProber(
             {
                 var total = response.Content.Headers.ContentRange?.Length ?? -1;
                 var acceptsRanges = total > 0;
-                LogProbed(current, response.StatusCode, total, acceptsRanges);
+                LogProbed(UrlRedaction.Redact(current), response.StatusCode, total, acceptsRanges);
                 return new ProbeResult(current, total, acceptsRanges, validators);
             }
 
             if (response.StatusCode == HttpStatusCode.OK)
             {
                 var total = response.Content.Headers.ContentLength ?? -1;
-                LogProbed(current, response.StatusCode, total, acceptsRanges: false);
+                LogProbed(UrlRedaction.Redact(current), response.StatusCode, total, acceptsRanges: false);
                 return new ProbeResult(current, total, AcceptsRanges: false, validators);
             }
 
@@ -82,7 +82,7 @@ public sealed partial class RangeProber(
         var ifRange = validators.ToIfRangeHeaderValue();
         if (ifRange is null)
         {
-            LogRevalidated(finalUrl, unchanged: false, "no usable validator");
+            LogRevalidated(UrlRedaction.Redact(finalUrl), unchanged: false, "no usable validator");
             return new RevalidationResult(Unchanged: false);
         }
 
@@ -94,7 +94,7 @@ public sealed partial class RangeProber(
         // any discard so partial progress survives a stale-credential resume (ADR-0011).
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
-            LogRevalidated(finalUrl, unchanged: false, $"status {(int)response.StatusCode}");
+            LogRevalidated(UrlRedaction.Redact(finalUrl), unchanged: false, $"status {(int)response.StatusCode}");
             throw HttpErrorClassifier.ForStatus(response.StatusCode);
         }
 
@@ -103,7 +103,7 @@ public sealed partial class RangeProber(
             response.StatusCode == HttpStatusCode.PartialContent
             && (response.Content.Headers.ContentRange?.Length ?? -1) == expectedSize;
 
-        LogRevalidated(finalUrl, unchanged, $"status {(int)response.StatusCode}");
+        LogRevalidated(UrlRedaction.Redact(finalUrl), unchanged, $"status {(int)response.StatusCode}");
         return new RevalidationResult(unchanged);
     }
 
@@ -163,8 +163,8 @@ public sealed partial class RangeProber(
 
     [LoggerMessage(Level = LogLevel.Information,
         Message = "Probed {Url}: status {Status}, total {TotalSize}, acceptsRanges {AcceptsRanges}.")]
-    private partial void LogProbed(Uri url, HttpStatusCode status, long totalSize, bool acceptsRanges);
+    private partial void LogProbed(string url, HttpStatusCode status, long totalSize, bool acceptsRanges);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Revalidated {Url}: unchanged {Unchanged} ({Detail}).")]
-    private partial void LogRevalidated(Uri url, bool unchanged, string detail);
+    private partial void LogRevalidated(string url, bool unchanged, string detail);
 }

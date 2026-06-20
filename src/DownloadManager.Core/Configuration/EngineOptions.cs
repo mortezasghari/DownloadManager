@@ -44,4 +44,11 @@ public sealed record EngineOptions
 
     /// <summary>Maximum segments downloaded in parallel within one download (spec §8).</summary>
     public int MaxSegmentConcurrency { get; init; } = 8;
+
+    /// <summary>
+    /// Upper bound on bytes reserved by <b>Full</b> preallocation (ADR-0020, audit F6). When the
+    /// server-advertised size exceeds this (or most of the free disk), the target degrades to sparse —
+    /// which reserves no real disk — instead of reserving the claimed size up front. Default 16 GiB.
+    /// </summary>
+    public long MaxFullPreallocationBytes { get; init; } = 16L * 1024 * 1024 * 1024;
 }

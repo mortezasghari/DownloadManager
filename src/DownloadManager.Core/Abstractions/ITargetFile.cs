@@ -27,5 +27,9 @@ public interface ITargetFile : IAsyncDisposable
 /// <summary>Opens/creates a target file and applies the requested preallocation strategy.</summary>
 public interface ITargetFileFactory
 {
-    ITargetFile Open(string path, long expectedSize, PreallocationMode mode);
+    /// <param name="maxFullPreallocationBytes">Upper bound on bytes reserved by <b>Full</b> preallocation
+    /// (ADR-0020, audit F6); a larger <paramref name="expectedSize"/> (or one above most of the free disk)
+    /// degrades to sparse. Defaults to no cap for callers that don't supply one.</param>
+    ITargetFile Open(
+        string path, long expectedSize, PreallocationMode mode, long maxFullPreallocationBytes = long.MaxValue);
 }
