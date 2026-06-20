@@ -16,6 +16,12 @@ internal sealed class RecordingHistoryStore : IHistoryStore
     public IReadOnlyList<HistoryRecord> Load() => Records.ToArray();
 
     public void Append(HistoryRecord record) => Records.Add(record);
+
+    public void Rebuild(IReadOnlyList<HistoryRecord> records)
+    {
+        Records.Clear();
+        Records.AddRange(records);
+    }
 }
 
 /// <summary>A settable <see cref="IDownloadHandle"/> for headless view-model tests.</summary>
@@ -51,8 +57,18 @@ internal sealed class FakeUiScheduler : IDownloadScheduler
     /// <summary>Optional hook to customise the handle returned for a request (e.g. preset status).</summary>
     public Func<DownloadRequest, FakeDownloadHandle>? HandleFactory { get; set; }
 
+    /// <summary>When set, the next <see cref="EnqueueAsync"/> throws — simulates a crash during the
+    /// in-memory reflect step, after the append-first lifecycle event was already written (ADR-0021).</summary>
+    public bool FailNextEnqueue { get; set; }
+
     public Task<IDownloadHandle> EnqueueAsync(DownloadRequest request, CancellationToken cancellationToken = default)
     {
+        if (FailNextEnqueue)
+        {
+            FailNextEnqueue = false;
+            throw new InvalidOperationException("Simulated crash during in-memory enqueue reflect.");
+        }
+
         Enqueued.Add(request);
         var handle = HandleFactory?.Invoke(request) ?? new FakeDownloadHandle { Id = request.Id };
         _handles[request.Id] = handle;

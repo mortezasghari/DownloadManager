@@ -48,6 +48,18 @@ public sealed partial class JsonHistoryStore : IHistoryStore
         LogAppended(record.Id, record.State);
     }
 
+    public void Rebuild(IReadOnlyList<HistoryRecord> records)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+        lock (_gate)
+        {
+            _records.Clear();
+            _records.AddRange(records);
+            Persist();
+        }
+        LogRebuilt(_path, records.Count);
+    }
+
     private List<HistoryRecord> ReadFromDisk()
     {
         if (!File.Exists(_path))
@@ -78,6 +90,9 @@ public sealed partial class JsonHistoryStore : IHistoryStore
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Appended history record {Id} ({State}).")]
     private partial void LogAppended(string id, HistoryState state);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Rebuilt history {Path} from the lifecycle log ({Count} record(s)).")]
+    private partial void LogRebuilt(string path, int count);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "history.json at {Path} is unreadable; starting with empty history (file left untouched): {Reason}")]
     private partial void LogUnreadable(string path, string reason);

@@ -2,8 +2,10 @@ using System.Runtime.InteropServices;
 using DownloadManager.Core.Configuration;
 using DownloadManager.Core.Domain;
 using DownloadManager.Core.History;
+using DownloadManager.Core.Lifecycle;
 using DownloadManager.Persistence.History;
 using DownloadManager.Persistence.Io;
+using DownloadManager.Persistence.Lifecycle;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -36,6 +38,12 @@ internal static class SelfTest
         if (historyResult != 0)
         {
             return historyResult;
+        }
+
+        var lifecycleResult = RunLifecycleSelfTest();
+        if (lifecycleResult != 0)
+        {
+            return lifecycleResult;
         }
 
         var rid = RuntimeInformation.RuntimeIdentifier;
@@ -97,6 +105,58 @@ internal static class SelfTest
                 File.Delete(path);
             }
             catch (IOException)
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// Proves the lifecycle-event log (<c>queue.log</c>) round-trips under Native AOT via its source-gen
+    /// context (ADR-0021) — the new serialization path this phase adds. Appends one event, replays it via a
+    /// fresh log, and confirms the type survived. Throwaway temp dir; exit code 0 on success.
+    /// </summary>
+    private static int RunLifecycleSelfTest()
+    {
+        var rid = RuntimeInformation.RuntimeIdentifier;
+        var dir = Path.Combine(Path.GetTempPath(), $"dlm-smoke-life-{Guid.NewGuid():N}");
+        var logPath = Path.Combine(dir, "queue.log");
+
+        try
+        {
+            Directory.CreateDirectory(dir);
+            var id = DownloadId.New().ToString();
+            using (var log = new JsonLifecycleLog(logPath, NullLogger<JsonLifecycleLog>.Instance))
+            {
+                log.Append(new LifecycleEvent
+                {
+                    Id = id, Type = LifecycleEventType.Queued,
+                    Url = "https://host.example/smoke.bin", TargetPath = Path.Combine(dir, "smoke.bin"), SegmentCount = 4,
+                });
+            }
+
+            using var reopened = new JsonLifecycleLog(logPath, NullLogger<JsonLifecycleLog>.Instance);
+            var events = reopened.ReadAll();
+            if (events.Count != 1 || events[0].Type != LifecycleEventType.Queued || events[0].Id != id)
+            {
+                Console.Error.WriteLine($"SMOKE FAIL [{rid}]: queue.log did not round-trip under AOT.");
+                return 1;
+            }
+
+            Console.WriteLine($"LIFECYCLE OK [{rid}]: queue.log written + replayed under AOT (type={events[0].Type}).");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"SMOKE FAIL [{rid}]: lifecycle log threw: {ex}");
+            return 1;
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
             }
         }

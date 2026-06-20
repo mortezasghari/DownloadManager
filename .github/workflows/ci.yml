@@ -80,10 +80,11 @@ jobs:
           echo "== separated symbols (${{ matrix.rid }}) =="; ls -la "$SYM"
 
       # Headless native self-test on EVERY RID: runs the published binary with --smoke (no display).
-      # It proves three AOT-fragile paths in the real native image: (1) settings.json is written and
-      # deserialized via the source-gen context — a reflection binder would pass JIT tests and fail only
-      # here (ADR-0016); (2) history.json round-trips via its source-gen context incl. the string-enum
-      # converter (ADR-0019); (3) the platform's native preallocation P/Invoke executed (ADR-0006).
+      # It proves the AOT-fragile paths in the real native image: (1) settings.json round-trips via the
+      # source-gen context — a reflection binder would pass JIT tests and fail only here (ADR-0016);
+      # (2) history.json round-trips incl. the string-enum converter (ADR-0019); (3) queue.log (the
+      # lifecycle event log) round-trips via its source-gen context (ADR-0021); (4) the platform's native
+      # preallocation P/Invoke executed (ADR-0006).
       - name: Self-test native binary (--smoke, all RIDs)
         shell: bash
         run: |

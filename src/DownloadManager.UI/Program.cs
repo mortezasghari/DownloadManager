@@ -7,8 +7,10 @@ using DownloadManager.Core.Http;
 using DownloadManager.Core.Recovery;
 using DownloadManager.Core.Routing;
 using DownloadManager.Core.Scheduler;
+using DownloadManager.Core.Lifecycle;
 using DownloadManager.Persistence.History;
 using DownloadManager.Persistence.Io;
+using DownloadManager.Persistence.Lifecycle;
 using DownloadManager.Persistence.Metadata;
 using DownloadManager.Persistence.Progress;
 using DownloadManager.UI.Services;
@@ -72,6 +74,13 @@ internal static class Program
             Path.Combine(SettingsStore.DefaultDirectory(), "history.json"),
             sp.GetRequiredService<ILoggerFactory>().CreateLogger<JsonHistoryStore>()));
 
+        // Lifecycle-event log = source of truth (Phase: queue rebuild / ADR-0021). The queue (channel) and
+        // history.json are projections; recovery replays the log on startup to rebuild both.
+        services.AddSingleton<ILifecycleLog>(sp => new JsonLifecycleLog(
+            Path.Combine(SettingsStore.DefaultDirectory(), "queue.log"),
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<JsonLifecycleLog>()));
+        services.AddSingleton<QueueRecoveryService>();
+
         // Inline queue-settings panel (Phase 8). It mutates the same shared option singletons the engine
         // and scheduler read, and persists through the Phase-7 store at the default settings.json path.
         services.AddSingleton(sp => new QueueSettingsViewModel(
@@ -117,6 +126,7 @@ internal static class Program
         // validated at startup). This keeps the engine, scheduler, and native P/Invokes in the trimmed graph.
         _ = provider.GetRequiredService<IDownloadScheduler>();
         _ = provider.GetRequiredService<RecoveryService>();
+        _ = provider.GetRequiredService<QueueRecoveryService>();
 
         return provider;
     }
