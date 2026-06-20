@@ -109,3 +109,20 @@ frequently while many segments are actively appending.
   triggers the mailbox refactor rather than a fourth patch.
 - Progress-log compaction retains its simple, provably-correct single-gate
   implementation until its own revisit trigger fires.
+
+## Update (ADR-0021, queue rebuild): mailbox still deferred, trigger sharpened
+
+The queue rebuild (ADR-0021) deliberately did **not** build a hand-rolled single-owner
+mailbox/actor loop. Instead it made a durable append-only lifecycle-event log the source
+of truth and turned the channel + history into projections, with **append-event-first**
+mutation ordering on the existing `System.Threading.Lock` model. This closes most of the
+crash-safety gap (a crash mid-mutation recovers from the log; bytes are never lost) without
+the cost and risk of hand-rolling an actor loop. A small, documented, recoverable
+crash-mid-mutation window remains (ADR-0021's accepted trade) — full atomic multi-step
+mutation is the only thing that would close it, and that is precisely the mailbox.
+
+**Mailbox revisit trigger (sharpened):** adopt the single-owner mailbox/actor model when
+**Akka.NET 1.6 with complete Native-AOT support ships** (verify the AOT support is complete,
+not partial/preview) — at which point it is a proven library, not a hand-rolled refactor.
+Until then the lock model + event-log projections stay, because the hand-rolled mailbox's
+cost outweighs closing the (accepted, rare, recoverable) residual window.

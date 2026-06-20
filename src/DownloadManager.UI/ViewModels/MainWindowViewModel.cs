@@ -5,6 +5,8 @@ using DownloadManager.Core.Domain;
 using DownloadManager.Core.History;
 using DownloadManager.Core.Http;
 using DownloadManager.Core.Import;
+using DownloadManager.Core.Lifecycle;
+using DownloadManager.Core.Recovery;
 using DownloadManager.Core.Routing;
 using DownloadManager.Core.Scheduler;
 using DownloadManager.UI.Services;
@@ -30,12 +32,17 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private readonly DownloadDefaults _defaults;
     private readonly IHistoryStore? _historyStore;
     private readonly IFileLauncher? _fileLauncher;
+    private readonly ILifecycleLog? _lifecycleLog;
 
     // Tracks each row's last-bucketed section so Tick only moves rows whose section actually changed.
     private readonly Dictionary<DownloadItemViewModel, QueueSection> _section = [];
 
     // Ids already written to history, so each terminal download is recorded exactly once (Phase 9).
     private readonly HashSet<DownloadId> _historyWritten = [];
+
+    // Last lifecycle-event type appended per id, so Tick logs a transition only when it actually changes
+    // (the lifecycle log is the source of truth; ADR-0021).
+    private readonly Dictionary<DownloadId, LifecycleEventType> _lastLifecycle = [];
 
     private string _newUrl = string.Empty;
     private string _importSummary = string.Empty;
@@ -54,7 +61,9 @@ public sealed partial class MainWindowViewModel : ObservableObject
         DownloadDefaults? defaults = null,
         QueueSettingsViewModel? queueSettings = null,
         IHistoryStore? historyStore = null,
-        IFileLauncher? fileLauncher = null)
+        IFileLauncher? fileLauncher = null,
+        ILifecycleLog? lifecycleLog = null,
+        QueueRecoveryService? recovery = null)
     {
         _scheduler = scheduler;
         _timeProvider = timeProvider;
@@ -73,10 +82,15 @@ public sealed partial class MainWindowViewModel : ObservableObject
         // Read-only history (Phase 9). Optional in headless tests that don't exercise it.
         _historyStore = historyStore;
         _fileLauncher = fileLauncher;
+        // Lifecycle-event log = source of truth (ADR-0021); the queue + history are projections of it.
+        _lifecycleLog = lifecycleLog;
+        // Recover FIRST: replay the log, rebuild history.json from it, and capture the active downloads to
+        // re-enqueue — so the history seeding below reflects the log-reconciled projection.
+        RecoveredActive = recovery?.Recover();
         if (_historyStore is not null)
         {
-            // Seed the view newest-first from the chronological store, and pre-mark seeded ids so a
-            // reload does not re-append (the store appends; the view reverses for display).
+            // Seed the view newest-first from the (now log-reconciled) store, and pre-mark seeded ids so
+            // a reload does not re-append (the store appends; the view reverses for display).
             foreach (var record in _historyStore.Load())
             {
                 History.Insert(0, NewHistoryItem(record));
@@ -88,6 +102,25 @@ public sealed partial class MainWindowViewModel : ObservableObject
         AddCommand = new AsyncRelayCommand(AddCurrentUrlAsync, () => IsValidHttpUrl(_newUrl));
         ImportCommand = new AsyncRelayCommand(ImportListAsync);
         ImportDialogCommand = new AsyncRelayCommand(() => _importDialog.ShowAsync(EnqueueManyAsync));
+    }
+
+    /// <summary>Active downloads recovered from the lifecycle log, to be re-enqueued on startup (ADR-0021).</summary>
+    public IReadOnlyList<DownloadRequest>? RecoveredActive { get; }
+
+    /// <summary>Re-enqueue the recovered active downloads (no new lifecycle event — already in the log).</summary>
+    public async Task RestoreRecoveredAsync()
+    {
+        if (RecoveredActive is null)
+        {
+            return;
+        }
+
+        foreach (var request in RecoveredActive)
+        {
+            // Already logged as active (id preserved); don't re-emit Queued on the first tick.
+            _lastLifecycle[request.Id] = LifecycleEventType.Queued;
+            await EnqueueRequestAsync(request, appendQueued: false).ConfigureAwait(true);
+        }
     }
 
     public string Title => "Download Manager";
@@ -160,9 +193,56 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             item.Refresh();
             Regroup(item);
+            TryLogTransition(item);
             TryRecordHistory(item);
         }
     }
+
+    /// <summary>
+    /// Append the observed lifecycle transition to the log when an item's mapped event type changes
+    /// (ADR-0021) — best-effort, source-of-truth for the queue/history projections. The authoritative
+    /// append-first <c>Queued</c> is emitted at enqueue; this captures Started/Paused/terminal afterwards.
+    /// </summary>
+    private void TryLogTransition(DownloadItemViewModel item)
+    {
+        if (_lifecycleLog is null)
+        {
+            return;
+        }
+
+        var type = MapToLifecycle(item.Status);
+        if (_lastLifecycle.TryGetValue(item.Id, out var last) && last == type)
+        {
+            return;
+        }
+
+        _lastLifecycle[item.Id] = type;
+        AppendLifecycle(item.Id, type, item.Request, item.Name, item.SizeBytes);
+    }
+
+    private static LifecycleEventType MapToLifecycle(DownloadStatus status) => status switch
+    {
+        DownloadStatus.Queued => LifecycleEventType.Queued,
+        DownloadStatus.Running or DownloadStatus.Retrying => LifecycleEventType.Started,
+        DownloadStatus.Paused => LifecycleEventType.Paused,
+        DownloadStatus.Completed => LifecycleEventType.Completed,
+        DownloadStatus.Failed => LifecycleEventType.Failed,
+        _ => LifecycleEventType.Stopped, // Canceled
+    };
+
+    /// <summary>Append one lifecycle event (URL userinfo redacted, SH-1 F4). No-op without a log.</summary>
+    private void AppendLifecycle(DownloadId id, LifecycleEventType type, DownloadRequest request, string name, long size) =>
+        _lifecycleLog?.Append(new LifecycleEvent
+        {
+            Id = id.ToString(),
+            Type = type,
+            Url = UrlRedaction.Redact(request.Url),
+            TargetPath = request.TargetPath,
+            SegmentCount = request.SegmentCount,
+            ExpectedSha256 = request.ExpectedSha256,
+            Name = name,
+            Size = size,
+        });
 
     /// <summary>Append a history record the first time a row is observed in a terminal state (Phase 9).</summary>
     private void TryRecordHistory(DownloadItemViewModel item)
@@ -186,7 +266,46 @@ public sealed partial class MainWindowViewModel : ObservableObject
     }
 
     private HistoryItemViewModel NewHistoryItem(HistoryRecord record) =>
-        new(record, _fileLauncher, error => HistoryError = error);
+        new(record, _fileLauncher, error => HistoryError = error, ReAddFromHistoryAsync);
+
+    /// <summary>
+    /// Re-add a finished download to the queue (ADR-0021): append a fresh <c>Queued</c> event (new id,
+    /// reconstructed from the original's logged URL/target). The original terminal record stays in history;
+    /// the new id appears in the active queue — both projections derive from the same log.
+    /// </summary>
+    public async Task ReAddFromHistoryAsync(string originalId)
+    {
+        if (_lifecycleLog is null)
+        {
+            return;
+        }
+
+        // The history record holds no URL; recover it from the original download's logged events.
+        LifecycleEvent? source = null;
+        foreach (var e in _lifecycleLog.ReadAll())
+        {
+            if (e.Id == originalId && e.Url is not null && e.TargetPath is not null)
+            {
+                source = e;
+            }
+        }
+
+        if (source is null)
+        {
+            return;
+        }
+
+        var request = new DownloadRequest
+        {
+            Id = DownloadId.New(),
+            Url = new Uri(source.Url!),
+            TargetPath = source.TargetPath!,
+            SegmentCount = source.SegmentCount > 0 ? source.SegmentCount : 1,
+            ExpectedSha256 = source.ExpectedSha256,
+        };
+
+        await EnqueueRequestAsync(request, appendQueued: true).ConfigureAwait(true);
+    }
 
     public async Task AddCurrentUrlAsync()
     {
@@ -279,7 +398,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         }
     }
 
-    private async Task EnqueueAsync(Uri url, DownloadCredentials credentials)
+    private Task EnqueueAsync(Uri url, DownloadCredentials credentials)
     {
         var request = new DownloadRequest
         {
@@ -290,9 +409,28 @@ public sealed partial class MainWindowViewModel : ObservableObject
             Credentials = credentials,
         };
 
+        return EnqueueRequestAsync(request, appendQueued: true);
+    }
+
+    /// <summary>
+    /// Enqueue a fully-built request. When <paramref name="appendQueued"/>, the <c>Queued</c> lifecycle
+    /// event is appended to the log <b>first</b> (the durable, non-destructive step) and only then is the
+    /// download reflected in the scheduler + the in-memory rows (the disposable projection) — so a crash
+    /// in the window recovers from the log rather than losing the download (ADR-0021). Recovery passes
+    /// <c>false</c> because the event is already in the log.
+    /// </summary>
+    private async Task EnqueueRequestAsync(DownloadRequest request, bool appendQueued)
+    {
+        if (appendQueued)
+        {
+            // Append-event-first: durable truth before any in-memory reflect.
+            AppendLifecycle(request.Id, LifecycleEventType.Queued, request, Path.GetFileName(request.TargetPath), 0);
+            _lastLifecycle[request.Id] = LifecycleEventType.Queued;
+        }
+
         var handle = await _scheduler.EnqueueAsync(request).ConfigureAwait(true);
         AddRow(NewItem(request, handle), Downloads.Count);
-        LogEnqueued(request.Id, UrlRedaction.Redact(url));
+        LogEnqueued(request.Id, UrlRedaction.Redact(request.Url));
     }
 
     /// <summary>Add a row to the master list and its current section bucket (Phase 8).</summary>

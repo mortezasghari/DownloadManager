@@ -19,10 +19,12 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            desktop.MainWindow = new MainWindow
-            {
-                DataContext = _services.GetRequiredService<MainWindowViewModel>(),
-            };
+            var viewModel = _services.GetRequiredService<MainWindowViewModel>();
+            desktop.MainWindow = new MainWindow { DataContext = viewModel };
+
+            // Rebuild the active queue from the lifecycle log (ADR-0021): re-enqueue recovered downloads.
+            // Fire-and-forget on the UI context; failures surface through each download's own state.
+            _ = viewModel.RestoreRecoveredAsync();
         }
 
         base.OnFrameworkInitializationCompleted();

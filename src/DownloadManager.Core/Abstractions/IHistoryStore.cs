@@ -16,4 +16,11 @@ public interface IHistoryStore
 
     /// <summary>Append one terminal record and persist. Called once per terminal download.</summary>
     void Append(HistoryRecord record);
+
+    /// <summary>
+    /// Replace the entire cache with <paramref name="records"/> (chronological order) and persist it
+    /// (ADR-0021). Used to reconcile this read model to the lifecycle log on startup — history is a
+    /// projection, so a lost/corrupt file is rebuilt from the log rather than trusted.
+    /// </summary>
+    void Rebuild(IReadOnlyList<HistoryRecord> records);
 }
