@@ -27,7 +27,12 @@ public class FileLauncherTests
         var cmd = LaunchCommands.RevealInFolder(LaunchOs.Linux, Path);
 
         Assert.Equal("xdg-open", cmd.FileName);
-        Assert.Equal("\"/home/u/Downloads\"", cmd.Arguments); // the directory, not the file
+        // The directory, not the file. Computed host-aware (GetDirectoryName uses the host separator) so
+        // this asserts identically on a Windows or Linux test runner; at runtime Linux reveal only ever
+        // runs on Linux, where the separators are '/'.
+        var expectedDir = System.IO.Path.GetDirectoryName(Path)!;
+        Assert.Equal($"\"{expectedDir}\"", cmd.Arguments);
+        Assert.DoesNotContain("video.mp4", cmd.Arguments);
         Assert.False(cmd.UseShellExecute);
     }
 
