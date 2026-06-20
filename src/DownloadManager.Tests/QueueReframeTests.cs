@@ -64,7 +64,7 @@ public sealed class QueueReframeTests
     }
 
     [Fact]
-    public async Task A_completed_download_moves_to_the_finished_section()
+    public async Task A_paused_download_moves_to_the_paused_section()
     {
         var scheduler = new FakeUiScheduler();
         var vm = NewVm(scheduler);
@@ -74,13 +74,14 @@ public sealed class QueueReframeTests
         vm.Tick();
         Assert.Single(vm.Running);
 
-        ((FakeDownloadHandle)scheduler.Find(a.Id)!).Status = DownloadStatus.Completed;
+        ((FakeDownloadHandle)scheduler.Find(a.Id)!).Status = DownloadStatus.Paused;
         vm.Tick();
 
         Assert.Empty(vm.Running);
         Assert.Empty(vm.Waiting);
-        Assert.Single(vm.Finished);
-        Assert.True(vm.HasFinished);
+        Assert.Single(vm.Paused);   // parked, still in the queue (non-terminal)
+        Assert.True(vm.HasPaused);
+        Assert.Single(vm.Downloads); // not removed — pause is not terminal
     }
 
     [Fact]

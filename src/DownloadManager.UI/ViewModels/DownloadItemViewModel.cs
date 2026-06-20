@@ -133,11 +133,12 @@ public sealed class DownloadItemViewModel : ObservableObject
         _status is DownloadStatus.Queued or DownloadStatus.Running or DownloadStatus.Retrying;
 
     /// <summary>Which queue section this row belongs to (Phase 8) — drives the running/waiting split.</summary>
+    /// <summary>The queue section for a <b>non-terminal</b> row (terminal rows leave the queue entirely).</summary>
     public QueueSection Section => _status switch
     {
         DownloadStatus.Running or DownloadStatus.Retrying => QueueSection.Running,
         DownloadStatus.Queued => QueueSection.Waiting,
-        _ => QueueSection.Finished,
+        _ => QueueSection.Paused, // Paused (the only non-terminal state reaching here)
     };
 
     /// <summary>
