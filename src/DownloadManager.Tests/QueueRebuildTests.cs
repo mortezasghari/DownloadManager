@@ -1,3 +1,4 @@
+using DownloadManager.Core.Abstractions;
 using DownloadManager.Core.Domain;
 using DownloadManager.Core.History;
 using DownloadManager.Core.Lifecycle;
@@ -40,6 +41,20 @@ public sealed class QueueRebuildTests : IDisposable
 
     private JsonLifecycleLog NewLog() => new(LogPath, NullLogger<JsonLifecycleLog>.Instance);
 
+    // The log is a single-owner resource (one singleton in the app). Tests open-read-dispose so a second
+    // handle never overlaps the first (Windows FileShare.Read rejects concurrent ReadWrite handles).
+    private IReadOnlyList<LifecycleEvent> ReadAllEvents()
+    {
+        using var log = NewLog();
+        return log.ReadAll();
+    }
+
+    private void Recover(IHistoryStore history)
+    {
+        using var log = NewLog();
+        new QueueRecoveryService(log, history, NullLogger<QueueRecoveryService>.Instance).Recover();
+    }
+
     private static LifecycleEvent Ev(string id, LifecycleEventType type, string? url = null, string? target = null,
         string? name = null, long size = 0) => new()
     {
@@ -69,7 +84,7 @@ public sealed class QueueRebuildTests : IDisposable
             log.Append(Ev(a, LifecycleEventType.Completed, size: 100));
         }
 
-        var events = NewLog().ReadAll();
+        var events = ReadAllEvents();
         var projection = QueueProjection.Reduce(events);
 
         Assert.Equal(4, events.Count);
@@ -89,7 +104,7 @@ public sealed class QueueRebuildTests : IDisposable
             log.Append(Ev(a, LifecycleEventType.Deleted));
         }
 
-        var projection = QueueProjection.Reduce(NewLog().ReadAll());
+        var projection = QueueProjection.Reduce(ReadAllEvents());
 
         Assert.Empty(projection.Active);
         Assert.Empty(projection.History); // tombstone wins over the prior terminal event
@@ -109,7 +124,7 @@ public sealed class QueueRebuildTests : IDisposable
         // Simulate a crash mid-append: a partial record with no terminating newline.
         File.AppendAllText(LogPath, "{\"Id\":\"" + NewId() + "\",\"Type\":\"Que");
 
-        var events = NewLog().ReadAll();
+        var events = ReadAllEvents();
 
         Assert.Equal(2, events.Count); // the two complete records survive; the torn tail is dropped
         Assert.Equal([a, b], events.Select(e => e.Id));
@@ -130,9 +145,11 @@ public sealed class QueueRebuildTests : IDisposable
         }
 
         var history = new JsonHistoryStore(HistoryPath, NullLogger<JsonHistoryStore>.Instance);
-        var recovery = new QueueRecoveryService(NewLog(), history, NullLogger<QueueRecoveryService>.Instance);
-
-        var active = recovery.Recover();
+        IReadOnlyList<DownloadRequest> active;
+        using (var log = NewLog())
+        {
+            active = new QueueRecoveryService(log, history, NullLogger<QueueRecoveryService>.Instance).Recover();
+        }
 
         Assert.Equal(a, Assert.Single(active).Id.ToString());   // non-terminal enqueued
         Assert.Equal(b, Assert.Single(history.Load()).Id);      // terminal projected to history, not active
@@ -152,14 +169,13 @@ public sealed class QueueRebuildTests : IDisposable
         }
 
         // Build the expected history from the log.
-        new QueueRecoveryService(NewLog(), new JsonHistoryStore(HistoryPath, NullLogger<JsonHistoryStore>.Instance),
-            NullLogger<QueueRecoveryService>.Instance).Recover();
+        Recover(new JsonHistoryStore(HistoryPath, NullLogger<JsonHistoryStore>.Instance));
         var expected = new JsonHistoryStore(HistoryPath, NullLogger<JsonHistoryStore>.Instance).Load();
 
         // Corrupt history.json, then recover again — it is rebuilt from the log, identical.
         File.WriteAllText(HistoryPath, "}}garbage not json{{");
         var rebuilt = new JsonHistoryStore(HistoryPath, NullLogger<JsonHistoryStore>.Instance);
-        new QueueRecoveryService(NewLog(), rebuilt, NullLogger<QueueRecoveryService>.Instance).Recover();
+        Recover(rebuilt);
 
         Assert.Equal(expected.Select(r => (r.Id, r.Name, r.Size, r.State)),
             rebuilt.Load().Select(r => (r.Id, r.Name, r.Size, r.State)));
@@ -186,8 +202,7 @@ public sealed class QueueRebuildTests : IDisposable
         await vm.ReAddFromHistoryAsync(original);
         vmLog.Dispose(); // release the file before reopening for assertions (Windows share semantics)
 
-        var events = NewLog().ReadAll();
-        var projection = QueueProjection.Reduce(events);
+        var projection = QueueProjection.Reduce(ReadAllEvents());
         Assert.Single(projection.Active);                              // a new active download exists
         Assert.NotEqual(original, projection.Active[0].Id.ToString()); // …under a fresh id
         Assert.Equal(original, Assert.Single(projection.History).Id);  // the original terminal record remains
@@ -211,7 +226,7 @@ public sealed class QueueRebuildTests : IDisposable
         });
         vmLog.Dispose();
 
-        var events = NewLog().ReadAll();
+        var events = ReadAllEvents();
         Assert.Equal(LifecycleEventType.Queued, Assert.Single(events).Type); // append happened despite the crash
         Assert.Empty(scheduler.Enqueued);                                    // the in-memory reflect did not
     }
@@ -240,7 +255,11 @@ public sealed class QueueRebuildTests : IDisposable
 
         // Restart: a fresh recovery replays the durable log and finds the download active — nothing lost.
         var history = new JsonHistoryStore(HistoryPath, NullLogger<JsonHistoryStore>.Instance);
-        var recovered = new QueueRecoveryService(NewLog(), history, NullLogger<QueueRecoveryService>.Instance).Recover();
+        IReadOnlyList<DownloadRequest> recovered;
+        using (var log = NewLog())
+        {
+            recovered = new QueueRecoveryService(log, history, NullLogger<QueueRecoveryService>.Instance).Recover();
+        }
 
         var request = Assert.Single(recovered);
         Assert.Equal("https://host.example/big.iso", request.Url.ToString());
