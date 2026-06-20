@@ -45,14 +45,26 @@ public sealed partial class TargetFileFactory : ITargetFileFactory
         _tryAllocateFull = tryAllocateFull;
     }
 
-    public ITargetFile Open(string path, long expectedSize, PreallocationMode mode)
+    public ITargetFile Open(
+        string path, long expectedSize, PreallocationMode mode, long maxFullPreallocationBytes = long.MaxValue)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
 
-        var directory = Path.GetDirectoryName(Path.GetFullPath(path));
+        var fullPath = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(fullPath);
         if (!string.IsNullOrEmpty(directory))
         {
             Directory.CreateDirectory(directory);
+        }
+
+        // F6 clamp (ADR-0020): a hostile server can advertise a huge-but-fitting size and reserve the disk
+        // before sending a byte. If the claimed size exceeds the configured cap or most of the free space,
+        // degrade Full → Sparse (which reserves no real disk) rather than reserving up front.
+        if (mode == PreallocationMode.Full && expectedSize > 0
+            && !MayFullyPreallocate(fullPath, expectedSize, maxFullPreallocationBytes))
+        {
+            LogFullCapped(expectedSize, maxFullPreallocationBytes);
+            mode = PreallocationMode.Sparse;
         }
 
         // FileShare.Read so a post-completion checksum pass can read while we hold the handle.
@@ -70,6 +82,38 @@ public sealed partial class TargetFileFactory : ITargetFileFactory
         }
 
         return new TargetFile(handle);
+    }
+
+    /// <summary>
+    /// Whether a Full reservation of <paramref name="expectedSize"/> is permitted: it must be within the
+    /// configured cap and within 90% of the target volume's free space. Free-space lookup failures fall
+    /// back to the absolute cap alone (never block the download).
+    /// </summary>
+    private static bool MayFullyPreallocate(string fullPath, long expectedSize, long maxFullPreallocationBytes)
+    {
+        if (expectedSize > maxFullPreallocationBytes)
+        {
+            return false;
+        }
+
+        try
+        {
+            var root = Path.GetPathRoot(fullPath);
+            if (!string.IsNullOrEmpty(root))
+            {
+                var free = new DriveInfo(root).AvailableFreeSpace;
+                if (expectedSize > (long)(free * 0.9))
+                {
+                    return false;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ArgumentException or UnauthorizedAccessException)
+        {
+            // Free space unknown — rely on the absolute cap only.
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -141,4 +185,8 @@ public sealed partial class TargetFileFactory : ITargetFileFactory
     [LoggerMessage(Level = LogLevel.Warning,
         Message = "Sparse preallocation of {Size} bytes failed; continuing with no preallocation.")]
     private partial void LogSparseFailed(long size);
+
+    [LoggerMessage(Level = LogLevel.Warning,
+        Message = "Full preallocation of {Size} bytes exceeds the cap ({Cap}) or free-space limit; using sparse instead.")]
+    private partial void LogFullCapped(long size, long cap);
 }

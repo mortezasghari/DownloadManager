@@ -1,4 +1,5 @@
 using DownloadManager.Core.Domain;
+using DownloadManager.Core.Routing;
 using DownloadManager.Core.Scheduler;
 
 namespace DownloadManager.UI.ViewModels;
@@ -42,7 +43,9 @@ public sealed class DownloadItemViewModel : ObservableObject
         _smoother = new SpeedSmoother(speedWindow ?? TimeSpan.FromSeconds(5));
 
         var fileName = Path.GetFileName(request.TargetPath);
-        Name = string.IsNullOrEmpty(fileName) ? request.Url.Host : fileName;
+        // Strip bidi/control chars from the displayed name so a right-to-left override can't render a
+        // disguised extension (audit F3); the on-disk path is already sanitized by the router.
+        Name = SafeFileName.StripBidiControls(string.IsNullOrEmpty(fileName) ? request.Url.Host : fileName);
 
         PauseCommand = new AsyncRelayCommand(() => _scheduler.PauseAsync(Id), () => CanPause);
         ResumeCommand = new AsyncRelayCommand(() => _scheduler.ResumeAsync(Id), () => CanResume);

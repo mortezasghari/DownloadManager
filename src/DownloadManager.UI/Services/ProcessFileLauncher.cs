@@ -35,9 +35,15 @@ public sealed class ProcessFileLauncher : IFileLauncher
             var info = new ProcessStartInfo
             {
                 FileName = command.FileName,
-                Arguments = command.Arguments,
                 UseShellExecute = command.UseShellExecute,
             };
+
+            // ArgumentList (not a hand-quoted Arguments string): .NET escapes each token, so an embedded
+            // quote in the filename can't break out and inject flags (audit F2).
+            foreach (var argument in command.Arguments)
+            {
+                info.ArgumentList.Add(argument);
+            }
 
             using var process = Process.Start(info);
             return process is null

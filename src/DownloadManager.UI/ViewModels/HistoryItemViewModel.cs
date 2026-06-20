@@ -1,4 +1,5 @@
 using DownloadManager.Core.History;
+using DownloadManager.Core.Routing;
 using DownloadManager.UI.Services;
 
 namespace DownloadManager.UI.ViewModels;
@@ -27,7 +28,9 @@ public sealed class HistoryItemViewModel : ObservableObject
 
     public string Id => _record.Id;
 
-    public string Name => _record.Name;
+    // Strip bidi/control chars from the displayed name so a right-to-left override can't disguise the
+    // extension in the history list (audit F3).
+    public string Name => SafeFileName.StripBidiControls(_record.Name);
 
     public string SavedPath => _record.SavedPath;
 

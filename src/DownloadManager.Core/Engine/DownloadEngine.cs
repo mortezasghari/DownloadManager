@@ -137,8 +137,10 @@ public sealed partial class DownloadEngine(
         var now = _timeProvider.GetUtcNow();
         var metadata = new DownloadMetadata
         {
-            OriginalUrl = request.Url.ToString(),
-            FinalUrl = probe.FinalUrl.ToString(),
+            // Redact any userinfo before it is persisted (audit F4). The live request/resume still use the
+            // full in-memory Uri; only the stored representation is redacted.
+            OriginalUrl = UrlRedaction.Redact(request.Url),
+            FinalUrl = UrlRedaction.Redact(probe.FinalUrl),
             ETag = probe.Validators.ETag,
             LastModified = probe.Validators.LastModified,
             TotalSize = probe.TotalSize,
@@ -150,7 +152,7 @@ public sealed partial class DownloadEngine(
         };
 
         await _metadataStore.SaveAsync(request.TargetPath, metadata, ct).ConfigureAwait(false);
-        LogStarting(request.Id, probe.FinalUrl, probe.TotalSize, probe.AcceptsRanges, segments.Length);
+        LogStarting(request.Id, UrlRedaction.Redact(probe.FinalUrl), probe.TotalSize, probe.AcceptsRanges, segments.Length);
         return metadata;
     }
 
@@ -161,7 +163,8 @@ public sealed partial class DownloadEngine(
         var layout = SegmentLayout.FromPersisted(metadata.Segments, metadata.TotalSize);
         var aggregator = new ProgressAggregator(metadata.TotalSize, layout.Count);
 
-        var target = _targetFileFactory.Open(request.TargetPath, metadata.TotalSize, request.Preallocation);
+        var target = _targetFileFactory.Open(
+            request.TargetPath, metadata.TotalSize, request.Preallocation, _engineOptions.MaxFullPreallocationBytes);
         var session = _progressLogStore.Open(request.TargetPath);
         long completed;
         try
@@ -619,7 +622,7 @@ public sealed partial class DownloadEngine(
 
     [LoggerMessage(Level = LogLevel.Information,
         Message = "Download {Id} starting: {Url}, total {TotalSize}, acceptsRanges {AcceptsRanges}, {SegmentCount} segment(s).")]
-    private partial void LogStarting(DownloadId id, Uri url, long totalSize, bool acceptsRanges, int segmentCount);
+    private partial void LogStarting(DownloadId id, string url, long totalSize, bool acceptsRanges, int segmentCount);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Download {Id} resuming {TargetPath} ({TotalSize} bytes, etag {ETag}).")]
     private partial void LogResuming(DownloadId id, string targetPath, long totalSize, string? eTag);

@@ -65,7 +65,8 @@ internal sealed class RecordingProgressLog(RecordingTargetFile target) : IProgre
 
 internal sealed class RecordingTargetFileFactory(RecordingTargetFile file) : ITargetFileFactory
 {
-    public ITargetFile Open(string path, long expectedSize, PreallocationMode mode) => file;
+    public ITargetFile Open(
+        string path, long expectedSize, PreallocationMode mode, long maxFullPreallocationBytes = long.MaxValue) => file;
 }
 
 internal sealed class RecordingProgressLogStore(ProgressLogSession session) : IProgressLogStore
