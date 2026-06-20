@@ -1,7 +1,11 @@
 using System.Runtime.InteropServices;
 using DownloadManager.Core.Configuration;
+using DownloadManager.Core.Domain;
+using DownloadManager.Core.History;
+using DownloadManager.Persistence.History;
 using DownloadManager.Persistence.Io;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DownloadManager.UI;
 
@@ -26,6 +30,12 @@ internal static class SelfTest
         if (configResult != 0)
         {
             return configResult;
+        }
+
+        var historyResult = RunHistorySelfTest();
+        if (historyResult != 0)
+        {
+            return historyResult;
         }
 
         var rid = RuntimeInformation.RuntimeIdentifier;
@@ -87,6 +97,52 @@ internal static class SelfTest
                 File.Delete(path);
             }
             catch (IOException)
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// Proves <c>history.json</c> round-trips under Native AOT via its source-gen context (ADR-0019),
+    /// exercising the string-enum converter path (new in Phase 9) — the one serialization feature the
+    /// config self-test does not cover. Writes one record, reloads via a fresh store, and confirms the
+    /// terminal state survived. Throwaway temp dir; exit code 0 on success.
+    /// </summary>
+    private static int RunHistorySelfTest()
+    {
+        var rid = RuntimeInformation.RuntimeIdentifier;
+        var dir = Path.Combine(Path.GetTempPath(), $"dlm-smoke-hist-{Guid.NewGuid():N}");
+        var historyPath = Path.Combine(dir, "history.json");
+
+        try
+        {
+            Directory.CreateDirectory(dir);
+            var record = HistoryRecord.From(
+                DownloadId.New(), "smoke.bin", 4096, HistoryState.Completed, Path.Combine(dir, "smoke.bin"));
+            new JsonHistoryStore(historyPath, NullLogger<JsonHistoryStore>.Instance).Append(record);
+
+            var reloaded = new JsonHistoryStore(historyPath, NullLogger<JsonHistoryStore>.Instance).Load();
+            if (reloaded.Count != 1 || reloaded[0].State != HistoryState.Completed)
+            {
+                Console.Error.WriteLine($"SMOKE FAIL [{rid}]: history.json did not round-trip under AOT.");
+                return 1;
+            }
+
+            Console.WriteLine($"HISTORY OK [{rid}]: history.json written + deserialized under AOT (state={reloaded[0].State}).");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"SMOKE FAIL [{rid}]: history load threw: {ex}");
+            return 1;
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
             }
         }

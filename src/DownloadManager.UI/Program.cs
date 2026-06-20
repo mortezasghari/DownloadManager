@@ -7,6 +7,7 @@ using DownloadManager.Core.Http;
 using DownloadManager.Core.Recovery;
 using DownloadManager.Core.Routing;
 using DownloadManager.Core.Scheduler;
+using DownloadManager.Persistence.History;
 using DownloadManager.Persistence.Io;
 using DownloadManager.Persistence.Metadata;
 using DownloadManager.Persistence.Progress;
@@ -62,6 +63,14 @@ internal static class Program
         services.AddSingleton<ICredentialPrompt, AvaloniaCredentialPrompt>();
         services.AddSingleton<IClipboardTextSource, AvaloniaClipboardTextSource>();
         services.AddSingleton<IImportDialog, AvaloniaImportDialog>();
+
+        // Read-only download history (Phase 9 / ADR-0019): source-gen JSON at {ApplicationData}/
+        // DownloadManager/history.json (same OS-config dir as settings.json), atomically written. The
+        // launcher shells out per-platform for the open / reveal actions.
+        services.AddSingleton<IFileLauncher, ProcessFileLauncher>();
+        services.AddSingleton<IHistoryStore>(sp => new JsonHistoryStore(
+            Path.Combine(SettingsStore.DefaultDirectory(), "history.json"),
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<JsonHistoryStore>()));
 
         // Inline queue-settings panel (Phase 8). It mutates the same shared option singletons the engine
         // and scheduler read, and persists through the Phase-7 store at the default settings.json path.
