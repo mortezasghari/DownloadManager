@@ -1,8 +1,22 @@
+using DownloadManager.Core.Abstractions;
 using DownloadManager.Core.Domain;
+using DownloadManager.Core.History;
 using DownloadManager.Core.Scheduler;
 using DownloadManager.UI.Services;
 
 namespace DownloadManager.Tests.Fakes;
+
+/// <summary>In-memory <see cref="IHistoryStore"/> for headless view-model tests; can be pre-seeded.</summary>
+internal sealed class RecordingHistoryStore : IHistoryStore
+{
+    public RecordingHistoryStore(params HistoryRecord[] seed) => Records.AddRange(seed);
+
+    public List<HistoryRecord> Records { get; } = [];
+
+    public IReadOnlyList<HistoryRecord> Load() => Records.ToArray();
+
+    public void Append(HistoryRecord record) => Records.Add(record);
+}
 
 /// <summary>A settable <see cref="IDownloadHandle"/> for headless view-model tests.</summary>
 internal sealed class FakeDownloadHandle : IDownloadHandle
@@ -104,6 +118,31 @@ internal sealed class FakeCredentialPrompt(DownloadCredentials? credentials) : I
 internal sealed class FakeClipboardTextSource(string? text) : IClipboardTextSource
 {
     public Task<string?> GetTextAsync() => Task.FromResult(text);
+}
+
+/// <summary>Records the path each open / reveal call targeted, and returns a configurable result so the
+/// missing-file → error path is testable without touching the filesystem.</summary>
+internal sealed class FakeFileLauncher : IFileLauncher
+{
+    public FakeFileLauncher(LaunchResult? result = null) => Result = result ?? LaunchResult.Success;
+
+    public LaunchResult Result { get; set; }
+
+    public List<string> OpenedFiles { get; } = [];
+
+    public List<string> RevealedPaths { get; } = [];
+
+    public LaunchResult OpenFile(string savedPath)
+    {
+        OpenedFiles.Add(savedPath);
+        return Result;
+    }
+
+    public LaunchResult RevealInFolder(string savedPath)
+    {
+        RevealedPaths.Add(savedPath);
+        return Result;
+    }
 }
 
 /// <summary>Captures the add-path the import dialog would be shown with (and can auto-invoke it).</summary>

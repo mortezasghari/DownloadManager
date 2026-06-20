@@ -65,6 +65,10 @@ public sealed class DownloadItemViewModel : ObservableObject
 
     public string TargetPath => Request.TargetPath;
 
+    /// <summary>Best-known size in bytes: the total when known, else the bytes written so far. Used for the
+    /// history record at terminal state (Phase 9).</summary>
+    public long SizeBytes => _totalBytes > 0 ? _totalBytes : _completedBytes;
+
     public DownloadStatus Status => _status;
 
     public string StatusText
