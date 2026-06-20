@@ -139,14 +139,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
     /// <summary>Rows queued but not yet started.</summary>
     public ObservableCollection<DownloadItemViewModel> Waiting { get; } = [];
 
-    /// <summary>Rows that are paused or terminal.</summary>
-    public ObservableCollection<DownloadItemViewModel> Finished { get; } = [];
+    /// <summary>Rows that are parked (paused). Terminal downloads are not in the queue — they're in history.</summary>
+    public ObservableCollection<DownloadItemViewModel> Paused { get; } = [];
 
     public bool HasRunning => Running.Count > 0;
 
     public bool HasWaiting => Waiting.Count > 0;
 
-    public bool HasFinished => Finished.Count > 0;
+    public bool HasPaused => Paused.Count > 0;
 
     /// <summary>Read-only download history (Phase 9), newest-first. Persists across sessions.</summary>
     public ObservableCollection<HistoryItemViewModel> History { get; } = [];
@@ -189,12 +189,33 @@ public sealed partial class MainWindowViewModel : ObservableObject
     /// section changed. Runs on the UI thread.</summary>
     public void Tick()
     {
+        List<DownloadItemViewModel>? terminal = null;
         foreach (var item in Downloads)
         {
             item.Refresh();
-            Regroup(item);
             TryLogTransition(item);
-            TryRecordHistory(item);
+
+            // A terminal download leaves the active queue BECAUSE it's terminal — the same classification
+            // the projection uses (terminal → history, not active; ADR-0021). It is recorded to history and
+            // then removed from the live queue, so it appears only in history, mirroring a log replay.
+            if (IsTerminal(item.Status))
+            {
+                TryRecordHistory(item);
+                (terminal ??= []).Add(item);
+            }
+            else
+            {
+                Regroup(item);
+            }
+        }
+
+        // Deferred removal (can't mutate Downloads while enumerating it).
+        if (terminal is not null)
+        {
+            foreach (var item in terminal)
+            {
+                RemoveRow(item);
+            }
         }
     }
 
@@ -477,14 +498,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
     {
         QueueSection.Running => Running,
         QueueSection.Waiting => Waiting,
-        _ => Finished,
+        _ => Paused,
     };
 
     private void RaiseBucketCounts()
     {
         OnPropertyChanged(nameof(HasRunning));
         OnPropertyChanged(nameof(HasWaiting));
-        OnPropertyChanged(nameof(HasFinished));
+        OnPropertyChanged(nameof(HasPaused));
     }
 
     /// <summary>Extension routing (ADR-0017) when a router is present; otherwise the flat Downloads folder.</summary>
