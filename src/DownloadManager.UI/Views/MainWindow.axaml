@@ -44,36 +44,75 @@
       <Setter Property="Padding" Value="7,1" />
       <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
+    <!-- Icon action buttons (ADR-0024): flat, square, a PathIcon glyph + hover tooltip for the label. -->
+    <Style Selector="Button.icon">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Padding" Value="7" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.icon:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#22808080" />
+    </Style>
+    <Style Selector="Button.icon PathIcon">
+      <Setter Property="Width" Value="16" />
+      <Setter Property="Height" Value="16" />
+    </Style>
   </Window.Styles>
 
   <Window.Resources>
+    <!-- Built-in vector icon geometries (ADR-0024): filled silhouettes drawn with the path mini-language —
+         NO icon-library dependency. PathIcon fills these with the control foreground. -->
+    <StreamGeometry x:Key="IconPlay">M8,5 L8,19 L19,12 Z</StreamGeometry>
+    <StreamGeometry x:Key="IconPause">M6,5 L10,5 L10,19 L6,19 Z M14,5 L18,5 L18,19 L14,19 Z</StreamGeometry>
+    <StreamGeometry x:Key="IconStop">M6,6 L18,6 L18,18 L6,18 Z</StreamGeometry>
+    <!-- Postpone = "send to bottom" (vertical-align-bottom). -->
+    <StreamGeometry x:Key="IconPostpone">M16,13 L12,17 L8,13 L11,13 L11,4 L13,4 L13,13 Z M5,18 L19,18 L19,20 L5,20 Z</StreamGeometry>
+    <!-- Retry = refresh. -->
+    <StreamGeometry x:Key="IconRetry">M17.65,6.35 C16.2,4.9 14.21,4 12,4 C7.58,4 4.01,7.58 4.01,12 C4.01,16.42 7.58,20 12,20 C15.73,20 18.84,17.45 19.73,14 L17.65,14 C16.83,16.33 14.61,18 12,18 C8.69,18 6,15.31 6,12 C6,8.69 8.69,6 12,6 C13.66,6 15.14,6.69 16.22,7.78 L13,11 L20,11 L20,4 Z</StreamGeometry>
+    <!-- Re-auth = key. -->
+    <StreamGeometry x:Key="IconKey">M12.65,10 C11.83,7.67 9.61,6 7,6 C3.69,6 1,8.69 1,12 C1,15.31 3.69,18 7,18 C9.61,18 11.83,16.33 12.65,14 L17,14 L17,18 L21,18 L21,14 L23,14 L23,10 Z M7,15 C5.35,15 4,13.65 4,12 C4,10.35 5.35,9 7,9 C8.65,9 10,10.35 10,12 C10,13.65 8.65,15 7,15 Z</StreamGeometry>
+    <!-- Open file = document. -->
+    <StreamGeometry x:Key="IconFile">M6,2 C4.9,2 4.01,2.9 4.01,4 L4,20 C4,21.1 4.89,22 5.99,22 L18,22 C19.1,22 20,21.1 20,20 L20,8 L14,2 Z M13,9 L13,3.5 L18.5,9 Z</StreamGeometry>
+    <!-- Open folder = folder. -->
+    <StreamGeometry x:Key="IconFolder">M10,4 L4,4 C2.9,4 2.01,4.9 2.01,6 L2,18 C2,19.1 2.9,20 4,20 L20,20 C21.1,20 22,19.1 22,18 L22,8 C22,6.9 21.1,6 20,6 L12,6 Z</StreamGeometry>
+
     <!-- One shared row template; the running / waiting / finished sections all render rows the same way. -->
     <DataTemplate x:Key="DownloadRow" x:DataType="vm:DownloadItemViewModel">
-      <Border BorderBrush="#22808080" BorderThickness="0,0,0,1" Padding="6,8">
+      <Border BorderBrush="#22808080" BorderThickness="0,0,0,1" Padding="10,12">
         <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
 
+          <!-- The SH-1 sanitized display name (bidi/control-stripped), never the raw URL (ADR-0024 / F3,F5). -->
           <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="8">
             <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
             <TextBlock Text="{Binding StatusText}" Opacity="0.8" />
           </StackPanel>
 
-          <ProgressBar Grid.Row="1" Grid.Column="0" Margin="0,4"
+          <ProgressBar Grid.Row="1" Grid.Column="0" Margin="0,6"
                        Minimum="0" Maximum="100"
                        Value="{Binding ProgressPercent}"
                        IsIndeterminate="{Binding IsIndeterminate}" />
 
-          <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" Spacing="16" Opacity="0.75">
+          <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" Spacing="16" Opacity="0.7">
             <TextBlock Text="{Binding SpeedText}" />
             <TextBlock Text="{Binding EtaText}" />
             <TextBlock Text="{Binding TargetPath}" TextTrimming="CharacterEllipsis" MaxWidth="360" />
           </StackPanel>
 
           <StackPanel Grid.Row="0" Grid.RowSpan="3" Grid.Column="1"
-                      Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-            <Button Content="Postpone" Command="{Binding PostponeCommand}" IsVisible="{Binding CanPostpone}" />
-            <Button Content="Retry"  Command="{Binding RetryCommand}"  IsVisible="{Binding CanRetry}" />
-            <Button Content="Re-auth…" Command="{Binding ReauthorizeCommand}" IsVisible="{Binding CanReauthorize}" />
-            <Button Content="Stop" Command="{Binding StopCommand}" IsVisible="{Binding CanStop}" />
+                      Orientation="Horizontal" Spacing="2" VerticalAlignment="Center" Margin="12,0,0,0">
+            <Button Classes="icon" Command="{Binding PostponeCommand}" IsVisible="{Binding CanPostpone}" ToolTip.Tip="Postpone">
+              <PathIcon Data="{StaticResource IconPostpone}" />
+            </Button>
+            <Button Classes="icon" Command="{Binding RetryCommand}" IsVisible="{Binding CanRetry}" ToolTip.Tip="Retry">
+              <PathIcon Data="{StaticResource IconRetry}" />
+            </Button>
+            <Button Classes="icon" Command="{Binding ReauthorizeCommand}" IsVisible="{Binding CanReauthorize}" ToolTip.Tip="Re-authorize">
+              <PathIcon Data="{StaticResource IconKey}" />
+            </Button>
+            <Button Classes="icon" Command="{Binding StopCommand}" IsVisible="{Binding CanStop}" ToolTip.Tip="Stop">
+              <PathIcon Data="{StaticResource IconStop}" />
+            </Button>
           </StackPanel>
         </Grid>
       </Border>
@@ -81,9 +120,10 @@
 
     <!-- Read-only history row (Phase 9): name, state · size, path, and open / reveal actions. -->
     <DataTemplate x:Key="HistoryRow" x:DataType="vm:HistoryItemViewModel">
-      <Border BorderBrush="#22808080" BorderThickness="0,0,0,1" Padding="6,8">
+      <Border BorderBrush="#22808080" BorderThickness="0,0,0,1" Padding="10,12">
         <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
 
+          <!-- The SH-1 sanitized display name (bidi/control-stripped), never the raw URL (ADR-0024 / F3,F5). -->
           <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="8">
             <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
             <TextBlock Text="{Binding StateText}" Opacity="0.8" />
@@ -91,12 +131,16 @@
           </StackPanel>
 
           <TextBlock Grid.Row="1" Grid.Column="0" Text="{Binding SavedPath}"
-                     TextTrimming="CharacterEllipsis" MaxWidth="460" Opacity="0.55" Margin="0,2,0,0" />
+                     TextTrimming="CharacterEllipsis" MaxWidth="460" Opacity="0.55" Margin="0,4,0,0" />
 
           <StackPanel Grid.Row="0" Grid.RowSpan="2" Grid.Column="1"
-                      Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-            <Button Content="Open file" Command="{Binding OpenFileCommand}" />
-            <Button Content="Open folder" Command="{Binding OpenFolderCommand}" />
+                      Orientation="Horizontal" Spacing="2" VerticalAlignment="Center" Margin="12,0,0,0">
+            <Button Classes="icon" Command="{Binding OpenFileCommand}" ToolTip.Tip="Open file">
+              <PathIcon Data="{StaticResource IconFile}" />
+            </Button>
+            <Button Classes="icon" Command="{Binding OpenFolderCommand}" ToolTip.Tip="Open containing folder">
+              <PathIcon Data="{StaticResource IconFolder}" />
+            </Button>
           </StackPanel>
         </Grid>
       </Border>
@@ -119,9 +163,14 @@
           <TextBlock Grid.Column="1" Text="{Binding PauseReasonText}" VerticalAlignment="Center" Margin="12,0"
                      Opacity="0.7" FontStyle="Italic"
                      IsVisible="{Binding PauseReasonText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-          <!-- Global (manual) Pause/Play — one action for the whole queue (ADR-0022). -->
-          <Button Grid.Column="2" Margin="0,0,8,0" Content="{Binding QueuePauseLabel}"
-                  Command="{Binding ToggleQueuePauseCommand}" />
+          <!-- Global (manual) Pause/Play — one action for the whole queue (ADR-0022); icon + hover tooltip. -->
+          <Button Grid.Column="2" Classes="icon" Margin="0,0,6,0" Command="{Binding ToggleQueuePauseCommand}"
+                  ToolTip.Tip="{Binding QueuePauseLabel}">
+            <Panel>
+              <PathIcon Data="{StaticResource IconPlay}" IsVisible="{Binding IsManuallyPaused}" />
+              <PathIcon Data="{StaticResource IconPause}" IsVisible="{Binding !IsManuallyPaused}" />
+            </Panel>
+          </Button>
           <Button Grid.Column="3" Content="⚙  Queue settings"
                   Command="{Binding QueueSettings.ToggleCommand}"
                   IsVisible="{Binding QueueSettings, Converter={x:Static ObjectConverters.IsNotNull}}" />
@@ -132,81 +181,77 @@
         <Border DataContext="{Binding QueueSettings}" x:DataType="vm:QueueSettingsViewModel"
                 IsVisible="{Binding IsExpanded, FallbackValue=False}"
                 BorderBrush="#22808080" BorderThickness="0,1,0,0" Padding="0,12,0,0">
-          <StackPanel Spacing="16">
+          <StackPanel Spacing="12">
 
-            <!-- Concurrency -->
-            <StackPanel Spacing="6">
-              <TextBlock Classes="group-header" Text="CONCURRENCY" />
-              <Grid ColumnDefinitions="230,Auto,*">
-                <TextBlock Grid.Column="0" Classes="field-label" Text="Max concurrent downloads" />
-                <NumericUpDown Grid.Column="1" Classes="knob" Minimum="1" Maximum="64" Increment="1"
-                               FormatString="0" Value="{Binding MaxConcurrentDownloads}" />
-                <TextBlock Grid.Column="2" Classes="note" VerticalAlignment="Center" Margin="14,0,0,0"
-                           Text="{Binding ConcurrencyNote}" />
-              </Grid>
-            </StackPanel>
+            <!-- Adaptive layout (ADR-0024): groups are fixed-width blocks in a WrapPanel — two columns when
+                 the panel is wide enough for two blocks, one column when narrow. Pure Avalonia reflow. -->
+            <WrapPanel>
 
-            <!-- Segmentation -->
-            <StackPanel Spacing="6">
-              <Grid ColumnDefinitions="*,Auto">
-                <TextBlock Grid.Column="0" Classes="group-header" Text="SEGMENTATION" />
-                <TextBlock Grid.Column="1" Classes="note" Text="{Binding NewDownloadsNote}" />
-              </Grid>
-              <Grid ColumnDefinitions="230,Auto,*" RowDefinitions="Auto,Auto" RowSpacing="8">
-                <TextBlock Grid.Row="0" Grid.Column="0" Classes="field-label" Text="Segments per download" />
-                <NumericUpDown Grid.Row="0" Grid.Column="1" Classes="knob" Minimum="1" Maximum="16" Increment="1"
-                               FormatString="0" Value="{Binding SegmentsPerDownload}" />
+              <!-- Concurrency -->
+              <StackPanel Width="380" Margin="0,0,16,12" Spacing="6">
+                <TextBlock Classes="group-header" Text="CONCURRENCY" />
+                <TextBlock Classes="note" Text="{Binding ConcurrencyNote}" />
+                <Grid ColumnDefinitions="150,*">
+                  <TextBlock Grid.Column="0" Classes="field-label" Text="Max concurrent downloads" />
+                  <NumericUpDown Grid.Column="1" Classes="knob" Minimum="1" Maximum="64" Increment="1"
+                                 FormatString="0" Value="{Binding MaxConcurrentDownloads}" />
+                </Grid>
+              </StackPanel>
 
-                <TextBlock Grid.Row="1" Grid.Column="0" Classes="field-label" Text="Small-file threshold (MiB)" />
-                <NumericUpDown Grid.Row="1" Grid.Column="1" Classes="knob" Minimum="0" Maximum="1048576" Increment="1"
-                               FormatString="0.##" Value="{Binding SmallFileThresholdMiB}" />
-              </Grid>
-            </StackPanel>
+              <!-- Segmentation -->
+              <StackPanel Width="380" Margin="0,0,16,12" Spacing="6">
+                <TextBlock Classes="group-header" Text="SEGMENTATION" />
+                <TextBlock Classes="note" Text="{Binding NewDownloadsNote}" />
+                <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto" RowSpacing="8">
+                  <TextBlock Grid.Row="0" Grid.Column="0" Classes="field-label" Text="Segments per download" />
+                  <NumericUpDown Grid.Row="0" Grid.Column="1" Classes="knob" Minimum="1" Maximum="16" Increment="1"
+                                 FormatString="0" Value="{Binding SegmentsPerDownload}" />
 
-            <!-- Retry & timeout -->
-            <StackPanel Spacing="6">
-              <Grid ColumnDefinitions="*,Auto">
-                <TextBlock Grid.Column="0" Classes="group-header" Text="RETRY &amp; TIMEOUT" />
-                <TextBlock Grid.Column="1" Classes="note" Text="{Binding NextAttemptNote}" />
-              </Grid>
-              <Grid ColumnDefinitions="230,Auto,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="8">
-                <TextBlock Grid.Row="0" Grid.Column="0" Classes="field-label" Text="Retry attempts" />
-                <NumericUpDown Grid.Row="0" Grid.Column="1" Classes="knob" Minimum="1" Maximum="100" Increment="1"
-                               FormatString="0" Value="{Binding MaxAttempts}" />
+                  <TextBlock Grid.Row="1" Grid.Column="0" Classes="field-label" Text="Small-file threshold (MiB)" />
+                  <NumericUpDown Grid.Row="1" Grid.Column="1" Classes="knob" Minimum="0" Maximum="1048576" Increment="1"
+                                 FormatString="0.##" Value="{Binding SmallFileThresholdMiB}" />
+                </Grid>
+              </StackPanel>
 
-                <TextBlock Grid.Row="1" Grid.Column="0" Classes="field-label" Text="Backoff base (seconds)" />
-                <NumericUpDown Grid.Row="1" Grid.Column="1" Classes="knob" Minimum="0" Maximum="3600" Increment="1"
-                               FormatString="0.##" Value="{Binding BaseDelaySeconds}" />
+              <!-- Retry & timeout -->
+              <StackPanel Width="380" Margin="0,0,16,12" Spacing="6">
+                <TextBlock Classes="group-header" Text="RETRY &amp; TIMEOUT" />
+                <TextBlock Classes="note" Text="{Binding NextAttemptNote}" />
+                <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="8">
+                  <TextBlock Grid.Row="0" Grid.Column="0" Classes="field-label" Text="Retry attempts" />
+                  <NumericUpDown Grid.Row="0" Grid.Column="1" Classes="knob" Minimum="1" Maximum="100" Increment="1"
+                                 FormatString="0" Value="{Binding MaxAttempts}" />
 
-                <TextBlock Grid.Row="2" Grid.Column="0" Classes="field-label" Text="Backoff max (seconds)" />
-                <NumericUpDown Grid.Row="2" Grid.Column="1" Classes="knob" Minimum="0" Maximum="3600" Increment="1"
-                               FormatString="0.##" Value="{Binding MaxDelaySeconds}" />
+                  <TextBlock Grid.Row="1" Grid.Column="0" Classes="field-label" Text="Backoff base (seconds)" />
+                  <NumericUpDown Grid.Row="1" Grid.Column="1" Classes="knob" Minimum="0" Maximum="3600" Increment="1"
+                                 FormatString="0.##" Value="{Binding BaseDelaySeconds}" />
 
-                <TextBlock Grid.Row="3" Grid.Column="0" Classes="field-label" Text="Per-attempt timeout (seconds)" />
-                <NumericUpDown Grid.Row="3" Grid.Column="1" Classes="knob" Minimum="1" Maximum="3600" Increment="5"
-                               FormatString="0" Value="{Binding PerAttemptTimeoutSeconds}" />
-              </Grid>
-            </StackPanel>
+                  <TextBlock Grid.Row="2" Grid.Column="0" Classes="field-label" Text="Backoff max (seconds)" />
+                  <NumericUpDown Grid.Row="2" Grid.Column="1" Classes="knob" Minimum="0" Maximum="3600" Increment="1"
+                                 FormatString="0.##" Value="{Binding MaxDelaySeconds}" />
 
-            <!-- Schedule (opt-in time-based pause) -->
-            <StackPanel Spacing="6">
-              <Grid ColumnDefinitions="*,Auto">
-                <TextBlock Grid.Column="0" Classes="group-header" Text="SCHEDULE" />
-                <TextBlock Grid.Column="1" Classes="note" Text="{Binding ScheduleNote}" />
-              </Grid>
-              <Grid ColumnDefinitions="230,Auto,Auto,Auto,*" RowDefinitions="Auto,Auto" RowSpacing="8">
-                <CheckBox Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Content="Pause outside scheduled hours"
-                          IsChecked="{Binding ScheduleEnabled}" />
+                  <TextBlock Grid.Row="3" Grid.Column="0" Classes="field-label" Text="Per-attempt timeout (seconds)" />
+                  <NumericUpDown Grid.Row="3" Grid.Column="1" Classes="knob" Minimum="1" Maximum="3600" Increment="5"
+                                 FormatString="0" Value="{Binding PerAttemptTimeoutSeconds}" />
+                </Grid>
+              </StackPanel>
 
+              <!-- Schedule (opt-in time-based pause) -->
+              <StackPanel Width="380" Margin="0,0,16,12" Spacing="6">
+                <TextBlock Classes="group-header" Text="SCHEDULE" />
+                <TextBlock Classes="note" Text="{Binding ScheduleNote}" />
+                <CheckBox Content="Pause outside scheduled hours" IsChecked="{Binding ScheduleEnabled}" />
                 <!-- TimePicker produces valid times directly — no string parse/validate path (ADR-0023). -->
-                <TextBlock Grid.Row="1" Grid.Column="0" Classes="field-label" Text="Window" />
-                <TimePicker Grid.Row="1" Grid.Column="1" ClockIdentifier="24HourClock"
-                            SelectedTime="{Binding ScheduleStart}" IsEnabled="{Binding ScheduleEnabled}" />
-                <TextBlock Grid.Row="1" Grid.Column="2" Text="to" VerticalAlignment="Center" Margin="8,0" Opacity="0.7" />
-                <TimePicker Grid.Row="1" Grid.Column="3" ClockIdentifier="24HourClock"
-                            SelectedTime="{Binding ScheduleStop}" IsEnabled="{Binding ScheduleEnabled}" />
-              </Grid>
-            </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <TimePicker ClockIdentifier="24HourClock"
+                              SelectedTime="{Binding ScheduleStart}" IsEnabled="{Binding ScheduleEnabled}" />
+                  <TextBlock Text="to" VerticalAlignment="Center" Opacity="0.7" />
+                  <TimePicker ClockIdentifier="24HourClock"
+                              SelectedTime="{Binding ScheduleStop}" IsEnabled="{Binding ScheduleEnabled}" />
+                </StackPanel>
+              </StackPanel>
+
+            </WrapPanel>
 
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,4,0,0">
               <Button Content="Cancel" Command="{Binding CancelCommand}" />

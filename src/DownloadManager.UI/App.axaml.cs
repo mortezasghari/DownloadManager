@@ -22,11 +22,13 @@ public partial class App : Application
             var viewModel = _services.GetRequiredService<MainWindowViewModel>();
             desktop.MainWindow = new MainWindow { DataContext = viewModel };
 
-            // --open-settings: start with the queue-settings panel expanded so the AOT GUI smoke-launch
-            // actually renders the schedule TimePicker (ADR-0023). No effect on a normal launch.
+            // --open-settings: render-verification flag for the AOT GUI smoke-launch. Expands the settings
+            // panel (renders the adaptive WrapPanel + schedule TimePicker) and seeds one display-only queue
+            // row (renders the icon buttons: PathIcon + ToolTip). No effect on a normal launch (ADR-0023/0024).
             if (desktop.Args is { } args && Array.IndexOf(args, "--open-settings") >= 0)
             {
                 viewModel.QueueSettings?.Open();
+                viewModel.SeedRenderDemo();
             }
 
             // Rebuild the active queue from the lifecycle log (ADR-0021): re-enqueue recovered downloads.

@@ -122,6 +122,26 @@ public sealed partial class MainWindowViewModel : ObservableObject
     /// <summary>Active downloads recovered from the lifecycle log, to be re-enqueued on startup (ADR-0021).</summary>
     public IReadOnlyList<DownloadRequest>? RecoveredActive { get; }
 
+    /// <summary>
+    /// Seed one display-only queue row so the AOT GUI smoke-launch (with <c>--open-settings</c>) actually
+    /// renders the row's icon buttons (PathIcon + ToolTip) — proving the new templated controls render under
+    /// AOT (ADR-0024). Added to the Running <i>bucket only</i> (not <see cref="Downloads"/>), so the tick
+    /// never sees it: no lifecycle-log entry, no recovery pollution. Not used in a normal launch.
+    /// </summary>
+    public void SeedRenderDemo()
+    {
+        var request = new DownloadRequest
+        {
+            Id = DownloadId.New(),
+            Url = new Uri("https://example.test/render-demo.bin"),
+            TargetPath = Path.Combine(DownloadsDirectory, "render-demo.bin"),
+        };
+        var item = NewItem(request, new RenderDemoHandle(request.Id));
+        item.Refresh();
+        Running.Add(item);
+        OnPropertyChanged(nameof(HasRunning));
+    }
+
     /// <summary>Re-enqueue the recovered active downloads (no new lifecycle event — already in the log).</summary>
     public async Task RestoreRecoveredAsync()
     {
@@ -214,8 +234,11 @@ public sealed partial class MainWindowViewModel : ObservableObject
     /// <summary>Whether the queue is effectively paused (either gate asserts). Orthogonal to per-item Postpone.</summary>
     public bool IsQueuePaused => PauseReason != QueuePauseReason.None;
 
-    /// <summary>Label for the manual Pause/Play button (reflects only the manual gate the button controls).</summary>
-    public string QueuePauseLabel => _manualPause ? "▶  Play queue" : "⏸  Pause queue";
+    /// <summary>Label/tooltip for the manual Pause/Play button (reflects only the manual gate it controls).</summary>
+    public string QueuePauseLabel => _manualPause ? "Play queue" : "Pause queue";
+
+    /// <summary>Whether the user's manual pause gate is asserting — drives the Play vs Pause icon.</summary>
+    public bool IsManuallyPaused => _manualPause;
 
     /// <summary>Human-readable reason the queue is paused, distinguishing the gates (ADR-0023).</summary>
     public string PauseReasonText => PauseReason switch
@@ -231,6 +254,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     {
         _manualPause = !_manualPause;
         OnPropertyChanged(nameof(QueuePauseLabel));
+        OnPropertyChanged(nameof(IsManuallyPaused));
         return ApplyEffectivePauseAsync();
     }
 
@@ -748,4 +772,19 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     [LoggerMessage(Level = LogLevel.Information, Message = "UI re-authorized download {OldId}; resuming as {NewId}.")]
     private partial void LogReauthorized(DownloadId oldId, DownloadId newId);
+
+    /// <summary>A fixed, display-only handle for <see cref="SeedRenderDemo"/> — never run by the scheduler.</summary>
+    private sealed class RenderDemoHandle(DownloadId id) : IDownloadHandle
+    {
+        public DownloadId Id { get; } = id;
+
+        public DownloadStatus Status => DownloadStatus.Running;
+
+        public bool NeedsCredentials => false;
+
+        public DownloadProgress Progress => new(450_000, 1_000_000);
+
+        public Task WaitForStatusAsync(Func<DownloadStatus, bool> predicate, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
 }
