@@ -113,12 +113,16 @@
     <Border DockPanel.Dock="Top" Background="#0A808080" BorderBrush="#22808080" BorderThickness="1"
             CornerRadius="8" Padding="14,10" Margin="0,0,0,12">
       <StackPanel Spacing="10">
-        <Grid ColumnDefinitions="*,Auto,Auto">
+        <Grid ColumnDefinitions="Auto,*,Auto,Auto">
           <TextBlock Grid.Column="0" Text="Queue" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
-          <!-- Global Pause/Play — one action for the whole queue (ADR-0022). -->
-          <Button Grid.Column="1" Margin="0,0,8,0" Content="{Binding QueuePauseLabel}"
+          <!-- Why the queue is paused, distinguishing the gates (ADR-0023). -->
+          <TextBlock Grid.Column="1" Text="{Binding PauseReasonText}" VerticalAlignment="Center" Margin="12,0"
+                     Opacity="0.7" FontStyle="Italic"
+                     IsVisible="{Binding PauseReasonText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+          <!-- Global (manual) Pause/Play — one action for the whole queue (ADR-0022). -->
+          <Button Grid.Column="2" Margin="0,0,8,0" Content="{Binding QueuePauseLabel}"
                   Command="{Binding ToggleQueuePauseCommand}" />
-          <Button Grid.Column="2" Content="⚙  Queue settings"
+          <Button Grid.Column="3" Content="⚙  Queue settings"
                   Command="{Binding QueueSettings.ToggleCommand}"
                   IsVisible="{Binding QueueSettings, Converter={x:Static ObjectConverters.IsNotNull}}" />
         </Grid>
@@ -181,6 +185,26 @@
                 <TextBlock Grid.Row="3" Grid.Column="0" Classes="field-label" Text="Per-attempt timeout (seconds)" />
                 <NumericUpDown Grid.Row="3" Grid.Column="1" Classes="knob" Minimum="1" Maximum="3600" Increment="5"
                                FormatString="0" Value="{Binding PerAttemptTimeoutSeconds}" />
+              </Grid>
+            </StackPanel>
+
+            <!-- Schedule (opt-in time-based pause) -->
+            <StackPanel Spacing="6">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Grid.Column="0" Classes="group-header" Text="SCHEDULE" />
+                <TextBlock Grid.Column="1" Classes="note" Text="{Binding ScheduleNote}" />
+              </Grid>
+              <Grid ColumnDefinitions="230,Auto,Auto,Auto,*" RowDefinitions="Auto,Auto" RowSpacing="8">
+                <CheckBox Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Content="Pause outside scheduled hours"
+                          IsChecked="{Binding ScheduleEnabled}" />
+
+                <!-- TimePicker produces valid times directly — no string parse/validate path (ADR-0023). -->
+                <TextBlock Grid.Row="1" Grid.Column="0" Classes="field-label" Text="Window" />
+                <TimePicker Grid.Row="1" Grid.Column="1" ClockIdentifier="24HourClock"
+                            SelectedTime="{Binding ScheduleStart}" IsEnabled="{Binding ScheduleEnabled}" />
+                <TextBlock Grid.Row="1" Grid.Column="2" Text="to" VerticalAlignment="Center" Margin="8,0" Opacity="0.7" />
+                <TimePicker Grid.Row="1" Grid.Column="3" ClockIdentifier="24HourClock"
+                            SelectedTime="{Binding ScheduleStop}" IsEnabled="{Binding ScheduleEnabled}" />
               </Grid>
             </StackPanel>
 

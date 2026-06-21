@@ -135,6 +135,7 @@ public static partial class SettingsStore
         var scheduler = settings.Scheduler ?? new SchedulerSettings();
         var engine = settings.Engine ?? new EngineSettings();
         var retry = settings.Retry ?? new RetrySettings();
+        var schedule = settings.Schedule ?? new ScheduleSettings();
 
         var maxSegments = ClampInt(logger, "engine.maxSegmentsPerDownload", engine.MaxSegmentsPerDownload, MinSegments, MaxSegments);
         var baseDelay = ClampDouble(logger, "retry.baseDelaySeconds", retry.BaseDelaySeconds, MinDelaySeconds, MaxDelaySeconds);
@@ -168,6 +169,27 @@ public static partial class SettingsStore
                 JitterFactor = ClampDouble(logger, "retry.jitterFactor", retry.JitterFactor, MinJitter, MaxJitter),
             },
             Routing = settings.Routing ?? RoutingSettings.CreateDefault(),
+            Schedule = ClampSchedule(schedule, logger),
+        };
+    }
+
+    /// <summary>Normalize the schedule: parse the HH:mm times; any unparseable time disables scheduling.</summary>
+    private static ScheduleSettings ClampSchedule(ScheduleSettings schedule, ILogger logger)
+    {
+        var startOk = TimeOnly.TryParseExact(schedule.Start, "HH:mm", out var start);
+        var stopOk = TimeOnly.TryParseExact(schedule.Stop, "HH:mm", out var stop);
+        if (schedule.Enabled && (!startOk || !stopOk))
+        {
+            LogClamped(logger, "schedule.start/stop", $"{schedule.Start}/{schedule.Stop}", "HH:mm", "HH:mm", "disabled");
+            return new ScheduleSettings { Enabled = false, Start = "00:00", Stop = "00:00" };
+        }
+
+        // Persist a normalized HH:mm form (and keep disabled-but-present times as-is when parseable).
+        return new ScheduleSettings
+        {
+            Enabled = schedule.Enabled,
+            Start = startOk ? start.ToString("HH:mm") : "00:00",
+            Stop = stopOk ? stop.ToString("HH:mm") : "00:00",
         };
     }
 
@@ -197,6 +219,13 @@ public static partial class SettingsStore
         },
         Routing = RoutingOptions.FromSettings(clamped.Routing, userProfile),
         Defaults = new DownloadDefaults { SegmentCount = clamped.Engine.SegmentsPerDownload },
+        Schedule = new ScheduleOptions
+        {
+            Enabled = clamped.Schedule.Enabled,
+            // Clamp already normalized these to valid HH:mm (or disabled), so parsing cannot fail here.
+            Start = TimeOnly.ParseExact(clamped.Schedule.Start, "HH:mm"),
+            Stop = TimeOnly.ParseExact(clamped.Schedule.Stop, "HH:mm"),
+        },
     };
 
     private static void TryWriteDefault(string settingsPath, AppSettings settings, ILogger logger)
@@ -309,6 +338,12 @@ public static partial class SettingsStore
         - `baseDelaySeconds` — first backoff delay. Range [0, 3600]. Default 1.
         - `maxDelaySeconds` — backoff ceiling (raised to at least baseDelaySeconds). Range [0, 3600].
         - `jitterFactor` — fraction of the delay added as random jitter. Range [0, 1]. Default 0.2.
+
+        ## schedule (opt-in time-based pause)
+        - `enabled` — when true, the queue is paused outside the daily window. Default false (off).
+        - `start` / `stop` — window as `HH:mm` (24-hour). The queue runs inside [start, stop); outside it is
+          paused (OR'd with the manual Pause/Play). An overnight window is supported (e.g. start 23:00,
+          stop 06:00). An unparseable time disables scheduling. Default 00:00/00:00.
 
         ## routing (IDM-style, by file extension, resolved at download start)
         Each category lists its `extensions` and a destination `folder`. Relative folders resolve against

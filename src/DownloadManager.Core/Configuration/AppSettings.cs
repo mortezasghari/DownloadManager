@@ -27,6 +27,8 @@ public sealed class AppSettings
 
     public RoutingSettings Routing { get; set; } = new();
 
+    public ScheduleSettings Schedule { get; set; } = new();
+
     /// <summary>Defaults whose routing folders are platform-correct for the current OS (macOS → Movies).</summary>
     public static AppSettings CreateDefault() => new()
     {
@@ -37,7 +39,24 @@ public sealed class AppSettings
         Engine = new EngineSettings(),
         Retry = new RetrySettings(),
         Routing = RoutingSettings.CreateDefault(),
+        Schedule = new ScheduleSettings(),
     };
+}
+
+/// <summary>
+/// Opt-in time-based schedule (ADR-0023). Times are <c>HH:mm</c> strings so the file stays hand-editable;
+/// an invalid/missing time → the schedule is treated as disabled (never a crash). See <see cref="ScheduleOptions"/>.
+/// </summary>
+public sealed class ScheduleSettings
+{
+    /// <summary>Opt-in. Default false: the schedule gate never asserts and time boundaries are inert.</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>Window start, <c>HH:mm</c> (24-hour). Default "00:00".</summary>
+    public string Start { get; set; } = "00:00";
+
+    /// <summary>Window stop, <c>HH:mm</c> (24-hour). Default "00:00".</summary>
+    public string Stop { get; set; } = "00:00";
 }
 
 /// <summary>Scheduler knobs. See <see cref="SchedulerOptions"/>.</summary>

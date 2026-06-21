@@ -40,13 +40,16 @@ public sealed class QueueSettingsTests : IDisposable
 
         public DownloadDefaults Defaults { get; } = new();
 
+        public ScheduleOptions Schedule { get; } = new();
+
         public CollectingLogger<QueueSettingsTests> Logger { get; } = new();
 
         public QueueSettingsViewModel Panel { get; }
 
         public Fixture(string settingsPath, string userProfile)
         {
-            Panel = new QueueSettingsViewModel(Scheduler, Engine, Retry, Defaults, settingsPath, Logger, userProfile);
+            Panel = new QueueSettingsViewModel(
+                Scheduler, Engine, Retry, Defaults, Schedule, settingsPath, Logger, userProfile);
         }
     }
 
@@ -199,6 +202,46 @@ public sealed class QueueSettingsTests : IDisposable
         var policy = new RetryPolicy(f.Retry);
         Assert.True(policy.ShouldRetry(8));   // attempts raised to 9
         Assert.False(policy.ShouldRetry(9));
+    }
+
+    // ---- Schedule via the TimePicker (ADR-0023): persisted shape unchanged by the control swap ----
+
+    [Fact]
+    public void Schedule_picker_values_round_trip_through_settings_json_as_unchanged_hh_mm_strings()
+    {
+        var f = NewFixture();
+
+        f.Panel.ScheduleEnabled = true;
+        f.Panel.ScheduleStart = new TimeSpan(23, 0, 0); // picker produces a TimeSpan
+        f.Panel.ScheduleStop = new TimeSpan(6, 30, 0);  // overnight window
+        f.Panel.SaveCommand.Execute(null);
+
+        // settings.json shape is unchanged: still HH:mm strings.
+        var raw = SettingsStore.ReadRaw(SettingsPath);
+        Assert.True(raw.Schedule.Enabled);
+        Assert.Equal("23:00", raw.Schedule.Start);
+        Assert.Equal("06:30", raw.Schedule.Stop);
+
+        // Applied live to the shared ScheduleOptions, and re-resolvable to the same times.
+        Assert.True(f.Schedule.Enabled);
+        Assert.Equal(new TimeOnly(23, 0), f.Schedule.Start);
+        var resolved = SettingsStore.LoadOrCreate(SettingsPath, f.Logger, _dir);
+        Assert.Equal(new TimeOnly(6, 30), resolved.Schedule.Stop);
+    }
+
+    [Fact]
+    public void Picker_time_is_normalized_to_minute_precision_and_null_is_midnight()
+    {
+        var f = NewFixture();
+
+        f.Panel.ScheduleEnabled = true;
+        f.Panel.ScheduleStart = new TimeSpan(0, 9, 0, 45); // 09:00:45 — only valid times producible
+        f.Panel.ScheduleStop = null;                        // → midnight
+        f.Panel.SaveCommand.Execute(null);
+
+        var raw = SettingsStore.ReadRaw(SettingsPath);
+        Assert.Equal("09:00", raw.Schedule.Start); // seconds dropped — always a valid HH:mm
+        Assert.Equal("00:00", raw.Schedule.Stop);
     }
 
     private static MainWindowViewModel NewMainVm(FakeUiScheduler scheduler, DownloadDefaults defaults) =>
