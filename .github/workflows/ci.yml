@@ -92,14 +92,17 @@ jobs:
           [ -f "$BIN.exe" ] && BIN="$BIN.exe"
           "$BIN" --smoke
 
-      - name: GUI smoke-launch (Linux, headless via xvfb)
+      # --open-settings expands the queue-settings panel so the schedule TimePicker is actually rendered
+      # (templated) under Native AOT + compiled bindings — a real runtime check for the templated control
+      # (ADR-0023), not just a successful publish. A TimePicker AOT trim/binding failure crashes the launch.
+      - name: GUI smoke-launch (Linux, headless via xvfb — renders the schedule TimePicker)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get install -y xvfb
-          timeout 15 xvfb-run -a ./artifacts/publish/${{ matrix.rid }}/DownloadManager.UI &
+          timeout 15 xvfb-run -a ./artifacts/publish/${{ matrix.rid }}/DownloadManager.UI --open-settings &
           PID=$!
           sleep 8
-          if kill -0 $PID 2>/dev/null; then echo "launched OK"; kill $PID; else echo "exited early"; exit 1; fi
+          if kill -0 $PID 2>/dev/null; then echo "launched OK (TimePicker rendered)"; kill $PID; else echo "exited early"; exit 1; fi
 
       - name: Upload native image (binary bundle, symbols separated out)
         uses: actions/upload-artifact@v7

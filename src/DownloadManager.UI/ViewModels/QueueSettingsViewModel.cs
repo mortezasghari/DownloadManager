@@ -41,8 +41,8 @@ public sealed class QueueSettingsViewModel : ObservableObject
     private double _maxDelaySeconds;
     private int _perAttemptTimeoutSeconds;
     private bool _scheduleEnabled;
-    private string _scheduleStart = "00:00";
-    private string _scheduleStop = "00:00";
+    private TimeSpan? _scheduleStart = TimeSpan.Zero;
+    private TimeSpan? _scheduleStop = TimeSpan.Zero;
 
     public QueueSettingsViewModel(
         IDownloadScheduler scheduler,
@@ -127,15 +127,15 @@ public sealed class QueueSettingsViewModel : ObservableObject
         set => SetProperty(ref _scheduleEnabled, value);
     }
 
-    /// <summary>Window start, HH:mm.</summary>
-    public string ScheduleStart
+    /// <summary>Window start, bound to a <c>TimePicker</c> (time-of-day; only valid times are producible).</summary>
+    public TimeSpan? ScheduleStart
     {
         get => _scheduleStart;
         set => SetProperty(ref _scheduleStart, value);
     }
 
-    /// <summary>Window stop, HH:mm.</summary>
-    public string ScheduleStop
+    /// <summary>Window stop, bound to a <c>TimePicker</c>.</summary>
+    public TimeSpan? ScheduleStop
     {
         get => _scheduleStop;
         set => SetProperty(ref _scheduleStop, value);
@@ -179,8 +179,9 @@ public sealed class QueueSettingsViewModel : ObservableObject
         raw.Retry.BaseDelaySeconds = BaseDelaySeconds;
         raw.Retry.MaxDelaySeconds = MaxDelaySeconds;
         raw.Schedule.Enabled = ScheduleEnabled;
-        raw.Schedule.Start = ScheduleStart;
-        raw.Schedule.Stop = ScheduleStop;
+        // Persisted shape is unchanged: still HH:mm strings in settings.json (the picker just produces the time).
+        raw.Schedule.Start = FormatTime(ScheduleStart);
+        raw.Schedule.Stop = FormatTime(ScheduleStop);
 
         var resolved = SettingsStore.Save(_settingsPath, raw, _logger, _userProfile);
 
@@ -199,6 +200,14 @@ public sealed class QueueSettingsViewModel : ObservableObject
 
         LoadFromLive();   // show the clamped values that were actually applied
         IsExpanded = false;
+    }
+
+    /// <summary>Expand the panel programmatically (e.g. the <c>--open-settings</c> launch flag, so the AOT
+    /// GUI smoke-launch renders the schedule TimePicker). Loads current values first, like Toggle.</summary>
+    public void Open()
+    {
+        LoadFromLive();
+        IsExpanded = true;
     }
 
     /// <summary>Discard unsaved edits and collapse — no write.</summary>
@@ -229,7 +238,11 @@ public sealed class QueueSettingsViewModel : ObservableObject
         BaseDelaySeconds = _retryOptions.BaseDelay.TotalSeconds;
         MaxDelaySeconds = _retryOptions.MaxDelay.TotalSeconds;
         ScheduleEnabled = _schedule.Enabled;
-        ScheduleStart = _schedule.Start.ToString("HH:mm");
-        ScheduleStop = _schedule.Stop.ToString("HH:mm");
+        ScheduleStart = _schedule.Start.ToTimeSpan();
+        ScheduleStop = _schedule.Stop.ToTimeSpan();
     }
+
+    /// <summary>A picker time → the persisted HH:mm string (minute precision). Null → midnight.</summary>
+    private static string FormatTime(TimeSpan? time) =>
+        time is { } t ? TimeOnly.FromTimeSpan(t).ToString("HH:mm") : "00:00";
 }

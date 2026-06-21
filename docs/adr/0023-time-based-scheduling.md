@@ -63,7 +63,11 @@ human-readable `PauseReasonText` ("Paused by you" / "Outside scheduled hours" / 
 source-gen config context (AOT-safe, no reflection — no new config path). Validated like the other knobs:
 an unparseable/missing time → scheduling is treated as **disabled**, never a crash. Surfaced in the
 Phase-8 queue-settings panel (a checkbox + start/stop inputs) under its existing explicit-Save semantics;
-Save mutates the shared `ScheduleOptions` singleton the view-model re-reads each tick.
+Save mutates the shared `ScheduleOptions` singleton the view-model re-reads each tick. The start/stop inputs
+are Avalonia `TimePicker`s (producing valid times directly — no string-parse path); the panel exposes them
+as `TimeSpan?` and formats to the unchanged `HH:mm` persisted string on Save. The templated `TimePicker`
+publishes clean under Native AOT + compiled bindings on every RID, exercised by the Linux GUI smoke-launch
+with `--open-settings` (the panel expanded so the picker is actually rendered).
 
 ## Consequences
 

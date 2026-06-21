@@ -198,12 +198,13 @@
                 <CheckBox Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Content="Pause outside scheduled hours"
                           IsChecked="{Binding ScheduleEnabled}" />
 
-                <TextBlock Grid.Row="1" Grid.Column="0" Classes="field-label" Text="Window (HH:mm)" />
-                <TextBox   Grid.Row="1" Grid.Column="1" Width="80" Text="{Binding ScheduleStart}"
-                           IsEnabled="{Binding ScheduleEnabled}" />
+                <!-- TimePicker produces valid times directly — no string parse/validate path (ADR-0023). -->
+                <TextBlock Grid.Row="1" Grid.Column="0" Classes="field-label" Text="Window" />
+                <TimePicker Grid.Row="1" Grid.Column="1" ClockIdentifier="24HourClock"
+                            SelectedTime="{Binding ScheduleStart}" IsEnabled="{Binding ScheduleEnabled}" />
                 <TextBlock Grid.Row="1" Grid.Column="2" Text="to" VerticalAlignment="Center" Margin="8,0" Opacity="0.7" />
-                <TextBox   Grid.Row="1" Grid.Column="3" Width="80" Text="{Binding ScheduleStop}"
-                           IsEnabled="{Binding ScheduleEnabled}" />
+                <TimePicker Grid.Row="1" Grid.Column="3" ClockIdentifier="24HourClock"
+                            SelectedTime="{Binding ScheduleStop}" IsEnabled="{Binding ScheduleEnabled}" />
               </Grid>
             </StackPanel>
 
