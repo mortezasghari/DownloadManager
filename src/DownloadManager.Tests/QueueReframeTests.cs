@@ -85,7 +85,7 @@ public sealed class QueueReframeTests
     }
 
     [Fact]
-    public async Task Deleting_a_row_removes_it_from_its_section_and_the_master_list()
+    public async Task Stopping_a_row_removes_it_from_its_section_and_the_master_list_on_tick()
     {
         var scheduler = new FakeUiScheduler();
         var vm = NewVm(scheduler);
@@ -93,7 +93,9 @@ public sealed class QueueReframeTests
         var a = await EnqueueAsync(vm, "https://example.test/a.bin");
         Assert.Single(vm.Waiting);
 
-        await vm.RemoveAsync(a);
+        await vm.StopAsync(a);                                  // terminal stop (dispatches cancel)
+        ((FakeDownloadHandle)scheduler.Find(a.Id)!).Status = DownloadStatus.Canceled;
+        vm.Tick();                                             // terminal → leaves the queue
 
         Assert.Empty(vm.Waiting);
         Assert.Empty(vm.Downloads);

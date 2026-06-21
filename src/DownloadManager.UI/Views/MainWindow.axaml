@@ -70,11 +70,10 @@
 
           <StackPanel Grid.Row="0" Grid.RowSpan="3" Grid.Column="1"
                       Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-            <Button Content="Pause"  Command="{Binding PauseCommand}"  IsVisible="{Binding CanPause}" />
-            <Button Content="Resume" Command="{Binding ResumeCommand}" IsVisible="{Binding CanResume}" />
+            <Button Content="Postpone" Command="{Binding PostponeCommand}" IsVisible="{Binding CanPostpone}" />
             <Button Content="Retry"  Command="{Binding RetryCommand}"  IsVisible="{Binding CanRetry}" />
             <Button Content="Re-auth…" Command="{Binding ReauthorizeCommand}" IsVisible="{Binding CanReauthorize}" />
-            <Button Content="Delete" Command="{Binding RemoveCommand}" />
+            <Button Content="Stop" Command="{Binding StopCommand}" IsVisible="{Binding CanStop}" />
           </StackPanel>
         </Grid>
       </Border>
@@ -114,9 +113,12 @@
     <Border DockPanel.Dock="Top" Background="#0A808080" BorderBrush="#22808080" BorderThickness="1"
             CornerRadius="8" Padding="14,10" Margin="0,0,0,12">
       <StackPanel Spacing="10">
-        <Grid ColumnDefinitions="*,Auto">
+        <Grid ColumnDefinitions="*,Auto,Auto">
           <TextBlock Grid.Column="0" Text="Queue" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
-          <Button Grid.Column="1" Content="⚙  Queue settings"
+          <!-- Global Pause/Play — one action for the whole queue (ADR-0022). -->
+          <Button Grid.Column="1" Margin="0,0,8,0" Content="{Binding QueuePauseLabel}"
+                  Command="{Binding ToggleQueuePauseCommand}" />
+          <Button Grid.Column="2" Content="⚙  Queue settings"
                   Command="{Binding QueueSettings.ToggleCommand}"
                   IsVisible="{Binding QueueSettings, Converter={x:Static ObjectConverters.IsNotNull}}" />
         </Grid>

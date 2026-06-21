@@ -42,6 +42,28 @@ public interface IDownloadScheduler : IAsyncDisposable
 
     IDownloadHandle? Find(DownloadId id);
 
+    /// <summary>
+    /// Postpone a download (ADR-0022): send it to the <b>end</b> of the queue and stop its active transfer
+    /// if running (bytes retained). The freed slot promotes the next download; the postponed one resumes
+    /// naturally when the queue works back to it. Not a parked/terminal state and there is no un-postpone —
+    /// to send it further back, postpone again. Built from the existing FIFO (tail-append + skip the stale
+    /// entry) and the per-download pause; no ordered/priority queue.
+    /// </summary>
+    Task PostponeAsync(DownloadId id, CancellationToken cancellationToken = default);
+
+    /// <summary>Whether the whole queue is globally paused (ADR-0022).</summary>
+    bool IsQueuePaused { get; }
+
+    /// <summary>
+    /// Global pause (ADR-0022): halt the running queue — block promotion of any further download. Active
+    /// downloads are paused by the orchestrator via the existing per-download pause. Orthogonal to
+    /// Postpone; while paused nothing downloads regardless of per-item state.
+    /// </summary>
+    void PauseQueue();
+
+    /// <summary>Global play (ADR-0022): un-block promotion so the queue resumes.</summary>
+    void ResumeQueue();
+
     /// <summary>The current size of the live concurrency gate (number of slots).</summary>
     int MaxConcurrency { get; }
 
