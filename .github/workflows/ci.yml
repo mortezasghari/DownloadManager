@@ -92,17 +92,18 @@ jobs:
           [ -f "$BIN.exe" ] && BIN="$BIN.exe"
           "$BIN" --smoke
 
-      # --open-settings expands the queue-settings panel so the schedule TimePicker is actually rendered
-      # (templated) under Native AOT + compiled bindings — a real runtime check for the templated control
-      # (ADR-0023), not just a successful publish. A TimePicker AOT trim/binding failure crashes the launch.
-      - name: GUI smoke-launch (Linux, headless via xvfb — renders the schedule TimePicker)
+      # --open-settings expands the settings panel AND seeds a display-only queue row, so the templated
+      # controls actually RENDER under Native AOT + compiled bindings — not just a successful publish:
+      # the adaptive WrapPanel + schedule TimePicker (ADR-0023) and the icon buttons PathIcon + ToolTip
+      # (ADR-0024). Any AOT trim/binding failure in those controls crashes the launch and fails this step.
+      - name: GUI smoke-launch (Linux, headless via xvfb — renders TimePicker + PathIcon/ToolTip + WrapPanel)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get install -y xvfb
           timeout 15 xvfb-run -a ./artifacts/publish/${{ matrix.rid }}/DownloadManager.UI --open-settings &
           PID=$!
           sleep 8
-          if kill -0 $PID 2>/dev/null; then echo "launched OK (TimePicker rendered)"; kill $PID; else echo "exited early"; exit 1; fi
+          if kill -0 $PID 2>/dev/null; then echo "launched OK (new controls rendered)"; kill $PID; else echo "exited early"; exit 1; fi
 
       - name: Upload native image (binary bundle, symbols separated out)
         uses: actions/upload-artifact@v7
