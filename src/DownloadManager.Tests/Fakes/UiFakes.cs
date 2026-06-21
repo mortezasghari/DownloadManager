@@ -101,6 +101,32 @@ internal sealed class FakeUiScheduler : IDownloadScheduler
 
     public IDownloadHandle? Find(DownloadId id) => _handles.GetValueOrDefault(id);
 
+    public List<DownloadId> Postponed { get; } = [];
+
+    public Task PostponeAsync(DownloadId id, CancellationToken cancellationToken = default)
+    {
+        Postponed.Add(id);
+        return Task.CompletedTask;
+    }
+
+    public bool IsQueuePaused { get; private set; }
+
+    public int QueuePauseCount { get; private set; }
+
+    public int QueueResumeCount { get; private set; }
+
+    public void PauseQueue()
+    {
+        IsQueuePaused = true;
+        QueuePauseCount++;
+    }
+
+    public void ResumeQueue()
+    {
+        IsQueuePaused = false;
+        QueueResumeCount++;
+    }
+
     /// <summary>Records the concurrency the panel applied; starts at 3 (the default).</summary>
     public int MaxConcurrency { get; private set; } = 3;
 

@@ -23,7 +23,8 @@ public class ViewModelTests
     private static DownloadItemViewModel Item(
         FakeDownloadHandle handle, TimeProvider time, TimeSpan? window = null) =>
         new(Request(), handle, new FakeUiScheduler(), time,
-            _ => Task.CompletedTask, _ => Task.CompletedTask, window ?? TimeSpan.FromSeconds(5));
+            onStop: _ => Task.CompletedTask, onReauthorize: _ => Task.CompletedTask,
+            onPostpone: _ => Task.CompletedTask, speedWindow: window ?? TimeSpan.FromSeconds(5));
 
     // ---- Speed / ETA smoothing ----
 
@@ -99,14 +100,15 @@ public class ViewModelTests
 
     // ---- Command enablement reflects the state machine ----
 
+    // Per-item actions (ADR-0022): Postpone + Stop for any non-terminal; Retry only on Failed. No per-item pause.
     [Theory]
-    [InlineData(DownloadStatus.Queued, true, false, false, false)]
-    [InlineData(DownloadStatus.Running, true, false, false, false)]
-    [InlineData(DownloadStatus.Retrying, true, false, false, false)]
-    [InlineData(DownloadStatus.Paused, false, true, false, false)]
-    [InlineData(DownloadStatus.Completed, false, false, false, false)]
+    [InlineData(DownloadStatus.Queued, true, true, false)]
+    [InlineData(DownloadStatus.Running, true, true, false)]
+    [InlineData(DownloadStatus.Retrying, true, true, false)]
+    [InlineData(DownloadStatus.Paused, true, true, false)]
+    [InlineData(DownloadStatus.Completed, false, false, false)]
     public void Command_enablement_tracks_status(
-        DownloadStatus status, bool canPause, bool canResume, bool canRetry, bool canReauth)
+        DownloadStatus status, bool canPostpone, bool canStop, bool canRetry)
     {
         var time = new FakeTimeProvider();
         var handle = new FakeDownloadHandle { Status = status };
@@ -114,12 +116,11 @@ public class ViewModelTests
 
         item.Refresh();
 
-        Assert.Equal(canPause, item.CanPause);
-        Assert.Equal(canResume, item.CanResume);
+        Assert.Equal(canPostpone, item.CanPostpone);
+        Assert.Equal(canStop, item.CanStop);
         Assert.Equal(canRetry, item.CanRetry);
-        Assert.Equal(canReauth, item.CanReauthorize);
-        Assert.Equal(canPause, item.PauseCommand.CanExecute(null));
-        Assert.Equal(canResume, item.ResumeCommand.CanExecute(null));
+        Assert.Equal(canPostpone, item.PostponeCommand.CanExecute(null));
+        Assert.Equal(canStop, item.StopCommand.CanExecute(null));
     }
 
     [Fact]
@@ -247,7 +248,7 @@ public class ViewModelTests
     }
 
     [Fact]
-    public async Task Delete_routes_a_live_download_through_the_scheduler_cancel_path_and_drops_the_row()
+    public async Task Stop_routes_a_live_download_through_the_cancel_path_then_it_leaves_the_queue_on_tick()
     {
         var scheduler = new FakeUiScheduler();
         var vm = NewMainVm(scheduler);
@@ -257,10 +258,13 @@ public class ViewModelTests
         ((FakeDownloadHandle)scheduler.Find(item.Id)!).Status = DownloadStatus.Running;
         item.Refresh();
 
-        await vm.RemoveAsync(item);
+        await vm.StopAsync(item);
 
-        Assert.Contains(item.Id, scheduler.Canceled); // dispatched via the existing Cancel path
-        Assert.Empty(vm.Downloads);                    // row dropped
+        Assert.Contains(item.Id, scheduler.Canceled); // stop dispatches via the existing Cancel path
+        // The Stop is terminal; the row leaves the queue on the next tick (it lands in history).
+        ((FakeDownloadHandle)scheduler.Find(item.Id)!).Status = DownloadStatus.Canceled;
+        vm.Tick();
+        Assert.Empty(vm.Downloads);
     }
 
     [Fact]

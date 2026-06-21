@@ -32,8 +32,9 @@ public sealed class DownloadItemViewModel : ObservableObject
         IDownloadHandle handle,
         IDownloadScheduler scheduler,
         TimeProvider timeProvider,
-        Func<DownloadItemViewModel, Task> onRemove,
+        Func<DownloadItemViewModel, Task> onStop,
         Func<DownloadItemViewModel, Task> onReauthorize,
+        Func<DownloadItemViewModel, Task>? onPostpone = null,
         TimeSpan? speedWindow = null)
     {
         Request = request;
@@ -47,11 +48,12 @@ public sealed class DownloadItemViewModel : ObservableObject
         // disguised extension (audit F3); the on-disk path is already sanitized by the router.
         Name = SafeFileName.StripBidiControls(string.IsNullOrEmpty(fileName) ? request.Url.Host : fileName);
 
-        PauseCommand = new AsyncRelayCommand(() => _scheduler.PauseAsync(Id), () => CanPause);
-        ResumeCommand = new AsyncRelayCommand(() => _scheduler.ResumeAsync(Id), () => CanResume);
+        // Per-item actions (ADR-0022): Postpone (send to tail + stop transfer) and Stop (terminal). There is
+        // NO per-item pause — pausing is global (the queue Pause/Play). Retry / Re-auth are credential/error flows.
+        PostponeCommand = new AsyncRelayCommand(() => onPostpone?.Invoke(this) ?? Task.CompletedTask, () => CanPostpone);
         RetryCommand = new AsyncRelayCommand(() => _scheduler.RetryAsync(Id), () => CanRetry);
         ReauthorizeCommand = new AsyncRelayCommand(() => onReauthorize(this), () => CanReauthorize);
-        RemoveCommand = new AsyncRelayCommand(() => onRemove(this));
+        StopCommand = new AsyncRelayCommand(() => onStop(this), () => CanStop);
 
         _status = handle.Status;
         UpdateStatusText();
@@ -110,20 +112,23 @@ public sealed class DownloadItemViewModel : ObservableObject
         private set => SetProperty(ref _needsCredentials, value);
     }
 
-    public AsyncRelayCommand PauseCommand { get; }
-
-    public AsyncRelayCommand ResumeCommand { get; }
+    public AsyncRelayCommand PostponeCommand { get; }
 
     public AsyncRelayCommand RetryCommand { get; }
 
     public AsyncRelayCommand ReauthorizeCommand { get; }
 
-    public AsyncRelayCommand RemoveCommand { get; }
+    public AsyncRelayCommand StopCommand { get; }
 
     // State-machine-driven command enablement (spec Phase 5): the UI reflects legality, not just rejects it.
-    public bool CanPause => _status is DownloadStatus.Queued or DownloadStatus.Running or DownloadStatus.Retrying;
 
-    public bool CanResume => _status is DownloadStatus.Paused;
+    /// <summary>Postpone is legal for any non-terminal download (queued/running/retrying/paused).</summary>
+    public bool CanPostpone =>
+        _status is DownloadStatus.Queued or DownloadStatus.Running or DownloadStatus.Retrying or DownloadStatus.Paused;
+
+    /// <summary>Stop is legal for any non-terminal download (it makes it terminal).</summary>
+    public bool CanStop =>
+        _status is DownloadStatus.Queued or DownloadStatus.Running or DownloadStatus.Retrying or DownloadStatus.Paused;
 
     public bool CanRetry => _status is DownloadStatus.Failed && !_needsCredentials;
 
@@ -209,13 +214,13 @@ public sealed class DownloadItemViewModel : ObservableObject
 
     private void UpdateCommandStates()
     {
-        OnPropertyChanged(nameof(CanPause));
-        OnPropertyChanged(nameof(CanResume));
+        OnPropertyChanged(nameof(CanPostpone));
+        OnPropertyChanged(nameof(CanStop));
         OnPropertyChanged(nameof(CanRetry));
         OnPropertyChanged(nameof(CanReauthorize));
         OnPropertyChanged(nameof(IsActive));
-        PauseCommand.RaiseCanExecuteChanged();
-        ResumeCommand.RaiseCanExecuteChanged();
+        PostponeCommand.RaiseCanExecuteChanged();
+        StopCommand.RaiseCanExecuteChanged();
         RetryCommand.RaiseCanExecuteChanged();
         ReauthorizeCommand.RaiseCanExecuteChanged();
     }

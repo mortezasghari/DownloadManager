@@ -44,9 +44,13 @@ public sealed partial class MainWindowViewModel : ObservableObject
     // (the lifecycle log is the source of truth; ADR-0021).
     private readonly Dictionary<DownloadId, LifecycleEventType> _lastLifecycle = [];
 
+    // Downloads this VM paused as part of a GLOBAL queue pause (ADR-0022), to resume on Play.
+    private readonly HashSet<DownloadId> _globallyPaused = [];
+
     private string _newUrl = string.Empty;
     private string _importSummary = string.Empty;
     private string? _historyError;
+    private bool _isQueuePaused;
 
     public MainWindowViewModel(
         IDownloadScheduler scheduler,
@@ -102,6 +106,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         AddCommand = new AsyncRelayCommand(AddCurrentUrlAsync, () => IsValidHttpUrl(_newUrl));
         ImportCommand = new AsyncRelayCommand(ImportListAsync);
         ImportDialogCommand = new AsyncRelayCommand(() => _importDialog.ShowAsync(EnqueueManyAsync));
+        ToggleQueuePauseCommand = new AsyncRelayCommand(ToggleQueuePauseAsync);
     }
 
     /// <summary>Active downloads recovered from the lifecycle log, to be re-enqueued on startup (ADR-0021).</summary>
@@ -184,6 +189,74 @@ public sealed partial class MainWindowViewModel : ObservableObject
 
     /// <summary>Opens the import-review dialog (paste / clipboard auto-paste); ticked URLs enqueue normally.</summary>
     public AsyncRelayCommand ImportDialogCommand { get; }
+
+    /// <summary>Global queue Pause/Play toggle (ADR-0022) — one action for the whole queue.</summary>
+    public AsyncRelayCommand ToggleQueuePauseCommand { get; }
+
+    /// <summary>Whether the whole queue is globally paused (ADR-0022). Orthogonal to per-item Postpone.</summary>
+    public bool IsQueuePaused
+    {
+        get => _isQueuePaused;
+        private set
+        {
+            if (SetProperty(ref _isQueuePaused, value))
+            {
+                OnPropertyChanged(nameof(QueuePauseLabel));
+            }
+        }
+    }
+
+    /// <summary>Label for the global Pause/Play button.</summary>
+    public string QueuePauseLabel => _isQueuePaused ? "▶  Play queue" : "⏸  Pause queue";
+
+    /// <summary>
+    /// Global Pause/Play (ADR-0022). Pause halts the whole queue: the scheduler blocks promotion and every
+    /// active download is paused via the existing per-download pause (bytes retained). Play un-blocks
+    /// promotion and resumes the downloads we paused. One action, the whole queue — there is no per-item pause.
+    /// </summary>
+    public async Task ToggleQueuePauseAsync()
+    {
+        if (!_isQueuePaused)
+        {
+            _scheduler.PauseQueue(); // block promotion first, then stop the active transfers
+            foreach (var item in Downloads)
+            {
+                if (item.Status is DownloadStatus.Running or DownloadStatus.Retrying && _globallyPaused.Add(item.Id))
+                {
+                    try
+                    {
+                        await _scheduler.PauseAsync(item.Id).ConfigureAwait(true);
+                    }
+                    catch (Exception ex) when (ex is InvalidDownloadTransitionException or KeyNotFoundException)
+                    {
+                        _globallyPaused.Remove(item.Id); // raced to terminal — nothing to pause
+                    }
+                }
+            }
+
+            IsQueuePaused = true;
+            LogQueue("paused");
+        }
+        else
+        {
+            foreach (var id in _globallyPaused)
+            {
+                try
+                {
+                    await _scheduler.ResumeAsync(id).ConfigureAwait(true);
+                }
+                catch (Exception ex) when (ex is InvalidDownloadTransitionException or KeyNotFoundException)
+                {
+                    // Raced to terminal between pause and play — fine.
+                }
+            }
+
+            _globallyPaused.Clear();
+            _scheduler.ResumeQueue(); // un-block promotion last
+            IsQueuePaused = false;
+            LogQueue("resumed");
+        }
+    }
 
     /// <summary>UI-timer tick: refresh every row's derived state (lock-free reads) and re-bucket any whose
     /// section changed. Runs on the UI thread.</summary>
@@ -357,23 +430,61 @@ public sealed partial class MainWindowViewModel : ObservableObject
         LogImported(result.ImportedCount, result.SkippedCount, path);
     }
 
-    /// <summary>Remove a row; cancels (and discards) first if the download is still live.</summary>
-    public async Task RemoveAsync(DownloadItemViewModel item)
+    /// <summary>
+    /// Stop a download (ADR-0022): terminal. Append the <c>Stopped</c> lifecycle event <b>first</b> (durable
+    /// truth), then stop it via the existing cancel path. It leaves the active queue and appears in history
+    /// through the same terminal projection as a completed download — not removed here directly.
+    /// </summary>
+    public async Task StopAsync(DownloadItemViewModel item)
     {
-        if (!IsTerminal(item.Status))
+        if (IsTerminal(item.Status))
         {
-            try
-            {
-                await _scheduler.CancelAsync(item.Id).ConfigureAwait(true);
-            }
-            catch (Exception ex) when (ex is InvalidDownloadTransitionException or KeyNotFoundException)
-            {
-                // Raced to terminal/removed already — fine, we're removing it anyway.
-            }
+            return;
         }
 
-        RemoveRow(item);
-        LogRemoved(item.Id);
+        // Append-event-first: the terminal Stopped event is the durable truth; pre-mark so the tick that
+        // observes the resulting Canceled state does not log a duplicate transition.
+        AppendLifecycle(item.Id, LifecycleEventType.Stopped, item.Request, item.Name, item.SizeBytes);
+        _lastLifecycle[item.Id] = LifecycleEventType.Stopped;
+
+        try
+        {
+            await _scheduler.CancelAsync(item.Id).ConfigureAwait(true);
+        }
+        catch (Exception ex) when (ex is InvalidDownloadTransitionException or KeyNotFoundException)
+        {
+            // Raced to terminal already — fine; the tick still records history and drops it from the queue.
+        }
+
+        LogStopped(item.Id);
+    }
+
+    /// <summary>
+    /// Postpone a download (ADR-0022): send it to the tail of the queue and stop its active transfer if
+    /// running (bytes retained). Append-event-first (a fresh <c>Queued</c> re-queue marker), then reflect
+    /// via the scheduler's reposition. Not terminal, no benched state, no un-postpone — postpone again to
+    /// go further back. Resumes naturally as the queue drains.
+    /// </summary>
+    public async Task PostponeAsync(DownloadItemViewModel item)
+    {
+        if (IsTerminal(item.Status))
+        {
+            return;
+        }
+
+        AppendLifecycle(item.Id, LifecycleEventType.Queued, item.Request, item.Name, item.SizeBytes);
+        _lastLifecycle[item.Id] = LifecycleEventType.Queued;
+
+        try
+        {
+            await _scheduler.PostponeAsync(item.Id).ConfigureAwait(true);
+        }
+        catch (Exception ex) when (ex is InvalidDownloadTransitionException or KeyNotFoundException)
+        {
+            // Raced to terminal — nothing to postpone.
+        }
+
+        LogPostponed(item.Id);
     }
 
     /// <summary>
@@ -523,7 +634,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
     }
 
     private DownloadItemViewModel NewItem(DownloadRequest request, IDownloadHandle handle) =>
-        new(request, handle, _scheduler, _timeProvider, RemoveAsync, ReauthorizeAndResumeAsync, _speedWindow);
+        new(request, handle, _scheduler, _timeProvider, StopAsync, ReauthorizeAndResumeAsync, PostponeAsync, _speedWindow);
 
     private static string FileNameFor(Uri url)
     {
@@ -558,8 +669,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [LoggerMessage(Level = LogLevel.Information, Message = "UI imported {Imported} URL(s), skipped {Skipped} from {Path}.")]
     private partial void LogImported(int imported, int skipped, string path);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "UI removed download {Id}.")]
-    private partial void LogRemoved(DownloadId id);
+    [LoggerMessage(Level = LogLevel.Information, Message = "UI stopped download {Id}.")]
+    private partial void LogStopped(DownloadId id);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "UI postponed download {Id} to the queue tail.")]
+    private partial void LogPostponed(DownloadId id);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "UI {Action} the queue.")]
+    private partial void LogQueue(string action);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "UI re-authorized download {OldId}; resuming as {NewId}.")]
     private partial void LogReauthorized(DownloadId oldId, DownloadId newId);

@@ -32,6 +32,16 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
     private int _targetConcurrency;
     private int _aliveWorkers;
 
+    // Global pause (ADR-0022): workers park on this gate before consuming work. Open = a completed task;
+    // closed = a fresh incomplete task that PauseQueue installs and ResumeQueue completes.
+    private readonly Lock _pauseLock = new();
+    private volatile TaskCompletionSource _resumeGate = OpenGate();
+
+    // Postpone (ADR-0022): a per-id count of stale channel entries to skip, so a download re-enqueued at
+    // the tail is not also started from its old position (the FIFO has no random-remove).
+    private readonly Lock _skipLock = new();
+    private readonly Dictionary<DownloadId, int> _postponeSkips = [];
+
     public DownloadScheduler(
         IDownloadEngine engine,
         RetryPolicy retryPolicy,
@@ -151,7 +161,109 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
         LogControl(id, "retry");
     }
 
+    public bool IsQueuePaused => !_resumeGate.Task.IsCompleted;
+
+    public void PauseQueue()
+    {
+        lock (_pauseLock)
+        {
+            if (IsQueuePaused)
+            {
+                return;
+            }
+
+            _resumeGate = ClosedGate(); // workers park before consuming the next download
+        }
+
+        LogControl(default, "queue-pause");
+    }
+
+    public void ResumeQueue()
+    {
+        TaskCompletionSource gate;
+        lock (_pauseLock)
+        {
+            gate = _resumeGate;
+        }
+
+        gate.TrySetResult(); // open the gate; parked workers proceed
+        LogControl(default, "queue-resume");
+    }
+
+    public async Task PostponeAsync(DownloadId id, CancellationToken cancellationToken = default)
+    {
+        var handle = Get(id);
+        var status = handle.Status;
+
+        if (status is DownloadStatus.Running or DownloadStatus.Retrying)
+        {
+            // Stop the active transfer (bytes retained — pause, never discard), which frees the slot so the
+            // next download promotes. Then re-enqueue at the tail once it has actually parked.
+            handle.Pause();
+            await handle
+                .WaitForStatusAsync(s => s is DownloadStatus.Paused or DownloadStatus.Completed
+                    or DownloadStatus.Failed or DownloadStatus.Canceled, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (handle.Status == DownloadStatus.Paused)
+            {
+                handle.Resume(); // Paused -> Queued
+                await _queue.Writer.WriteAsync(id, cancellationToken).ConfigureAwait(false); // tail
+            }
+        }
+        else if (status == DownloadStatus.Queued)
+        {
+            // Already queued (a live channel entry exists at its current position). Skip that stale entry
+            // and append a fresh one at the tail — the handle stays Queued, no state change, no duplicate.
+            lock (_skipLock)
+            {
+                _postponeSkips[id] = _postponeSkips.GetValueOrDefault(id) + 1;
+            }
+
+            await _queue.Writer.WriteAsync(id, cancellationToken).ConfigureAwait(false); // tail
+        }
+        else if (status == DownloadStatus.Paused)
+        {
+            handle.Resume();
+            await _queue.Writer.WriteAsync(id, cancellationToken).ConfigureAwait(false); // tail
+        }
+
+        LogControl(id, "postpone");
+    }
+
     public IDownloadHandle? Find(DownloadId id) => _handles.GetValueOrDefault(id);
+
+    private static TaskCompletionSource OpenGate()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        gate.SetResult();
+        return gate;
+    }
+
+    private static TaskCompletionSource ClosedGate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>True if <paramref name="id"/> had a pending postpone-skip, consuming one (stale entry).</summary>
+    private bool TryConsumePostponeSkip(DownloadId id)
+    {
+        lock (_skipLock)
+        {
+            if (_postponeSkips.TryGetValue(id, out var count) && count > 0)
+            {
+                if (count == 1)
+                {
+                    _postponeSkips.Remove(id);
+                }
+                else
+                {
+                    _postponeSkips[id] = count - 1;
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -200,7 +312,25 @@ public sealed partial class DownloadScheduler : IDownloadScheduler
                     return;
                 }
 
+                // Global pause (ADR-0022): park BEFORE consuming work so queued entries keep their position;
+                // nothing is promoted while paused. Fast-path skips the await when the gate is open.
+                var gate = _resumeGate.Task;
+                if (!gate.IsCompleted)
+                {
+                    await gate.WaitAsync(_shutdown.Token).ConfigureAwait(false);
+                    if (TryRetire())
+                    {
+                        return;
+                    }
+                }
+
                 if (!reader.TryRead(out var id) || !_handles.TryGetValue(id, out var handle))
+                {
+                    continue;
+                }
+
+                // A stale channel entry left by a postpone (the download was re-enqueued at the tail).
+                if (TryConsumePostponeSkip(id))
                 {
                     continue;
                 }
