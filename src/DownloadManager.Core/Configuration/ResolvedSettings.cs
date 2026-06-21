@@ -19,6 +19,8 @@ public sealed record ResolvedSettings
     public required RoutingOptions Routing { get; init; }
 
     public required DownloadDefaults Defaults { get; init; }
+
+    public required ScheduleOptions Schedule { get; init; }
 }
 
 /// <summary>Per-download defaults chosen by the UI when building a <c>DownloadRequest</c>.</summary>

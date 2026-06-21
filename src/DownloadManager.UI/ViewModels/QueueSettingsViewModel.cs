@@ -27,6 +27,7 @@ public sealed class QueueSettingsViewModel : ObservableObject
     private readonly EngineOptions _engineOptions;
     private readonly RetryOptions _retryOptions;
     private readonly DownloadDefaults _downloadDefaults;
+    private readonly ScheduleOptions _schedule;
     private readonly string _settingsPath;
     private readonly ILogger _logger;
     private readonly string? _userProfile;
@@ -39,12 +40,16 @@ public sealed class QueueSettingsViewModel : ObservableObject
     private double _baseDelaySeconds;
     private double _maxDelaySeconds;
     private int _perAttemptTimeoutSeconds;
+    private bool _scheduleEnabled;
+    private string _scheduleStart = "00:00";
+    private string _scheduleStop = "00:00";
 
     public QueueSettingsViewModel(
         IDownloadScheduler scheduler,
         EngineOptions engineOptions,
         RetryOptions retryOptions,
         DownloadDefaults downloadDefaults,
+        ScheduleOptions schedule,
         string settingsPath,
         ILogger logger,
         string? userProfile = null)
@@ -53,6 +58,7 @@ public sealed class QueueSettingsViewModel : ObservableObject
         _engineOptions = engineOptions;
         _retryOptions = retryOptions;
         _downloadDefaults = downloadDefaults;
+        _schedule = schedule;
         _settingsPath = settingsPath;
         _logger = logger;
         _userProfile = userProfile;
@@ -114,8 +120,31 @@ public sealed class QueueSettingsViewModel : ObservableObject
         set => SetProperty(ref _perAttemptTimeoutSeconds, value);
     }
 
+    /// <summary>Opt-in time-based schedule (ADR-0023). When off, the schedule gate never pauses the queue.</summary>
+    public bool ScheduleEnabled
+    {
+        get => _scheduleEnabled;
+        set => SetProperty(ref _scheduleEnabled, value);
+    }
+
+    /// <summary>Window start, HH:mm.</summary>
+    public string ScheduleStart
+    {
+        get => _scheduleStart;
+        set => SetProperty(ref _scheduleStart, value);
+    }
+
+    /// <summary>Window stop, HH:mm.</summary>
+    public string ScheduleStop
+    {
+        get => _scheduleStop;
+        set => SetProperty(ref _scheduleStop, value);
+    }
+
     // Honest, per-knob apply-timing notes surfaced beside the relevant fields.
     public string ConcurrencyNote => "Applies immediately.";
+
+    public string ScheduleNote => "Pauses the queue outside these hours. Off by default.";
 
     public string NewDownloadsNote => "Applies to new downloads.";
 
@@ -140,6 +169,7 @@ public sealed class QueueSettingsViewModel : ObservableObject
         raw.Scheduler ??= new SchedulerSettings();
         raw.Engine ??= new EngineSettings();
         raw.Retry ??= new RetrySettings();
+        raw.Schedule ??= new ScheduleSettings();
 
         raw.Scheduler.MaxConcurrentDownloads = MaxConcurrentDownloads;
         raw.Engine.SegmentsPerDownload = SegmentsPerDownload;
@@ -148,6 +178,9 @@ public sealed class QueueSettingsViewModel : ObservableObject
         raw.Retry.MaxAttempts = MaxAttempts;
         raw.Retry.BaseDelaySeconds = BaseDelaySeconds;
         raw.Retry.MaxDelaySeconds = MaxDelaySeconds;
+        raw.Schedule.Enabled = ScheduleEnabled;
+        raw.Schedule.Start = ScheduleStart;
+        raw.Schedule.Stop = ScheduleStop;
 
         var resolved = SettingsStore.Save(_settingsPath, raw, _logger, _userProfile);
 
@@ -159,6 +192,10 @@ public sealed class QueueSettingsViewModel : ObservableObject
         _retryOptions.MaxAttempts = resolved.Retry.MaxAttempts;                     // next attempt
         _retryOptions.BaseDelay = resolved.Retry.BaseDelay;                         // next attempt
         _retryOptions.MaxDelay = resolved.Retry.MaxDelay;                           // next attempt
+        // Schedule applies live: the view-model re-evaluates the gate each tick from this shared instance.
+        _schedule.Enabled = resolved.Schedule.Enabled;
+        _schedule.Start = resolved.Schedule.Start;
+        _schedule.Stop = resolved.Schedule.Stop;
 
         LoadFromLive();   // show the clamped values that were actually applied
         IsExpanded = false;
@@ -191,5 +228,8 @@ public sealed class QueueSettingsViewModel : ObservableObject
         MaxAttempts = _retryOptions.MaxAttempts;
         BaseDelaySeconds = _retryOptions.BaseDelay.TotalSeconds;
         MaxDelaySeconds = _retryOptions.MaxDelay.TotalSeconds;
+        ScheduleEnabled = _schedule.Enabled;
+        ScheduleStart = _schedule.Start.ToString("HH:mm");
+        ScheduleStop = _schedule.Stop.ToString("HH:mm");
     }
 }

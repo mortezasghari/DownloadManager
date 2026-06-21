@@ -88,6 +88,7 @@ internal static class Program
             sp.GetRequiredService<EngineOptions>(),
             sp.GetRequiredService<RetryOptions>(),
             sp.GetRequiredService<DownloadDefaults>(),
+            sp.GetRequiredService<ScheduleOptions>(),
             SettingsStore.DefaultPath(),
             sp.GetRequiredService<ILoggerFactory>().CreateLogger("QueueSettings")));
         services.AddTransient<MainWindowViewModel>();
@@ -103,6 +104,7 @@ internal static class Program
         services.AddSingleton(sp => sp.GetRequiredService<ResolvedSettings>().Scheduler);
         services.AddSingleton(sp => sp.GetRequiredService<ResolvedSettings>().Retry);
         services.AddSingleton(sp => sp.GetRequiredService<ResolvedSettings>().Defaults);
+        services.AddSingleton(sp => sp.GetRequiredService<ResolvedSettings>().Schedule);
         services.AddSingleton(sp => sp.GetRequiredService<ResolvedSettings>().Routing);
         services.AddSingleton<IFileRouter, FileRouter>();
         services.AddSingleton(new HttpOptions());

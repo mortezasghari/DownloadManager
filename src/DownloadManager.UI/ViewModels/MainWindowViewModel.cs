@@ -47,10 +47,18 @@ public sealed partial class MainWindowViewModel : ObservableObject
     // Downloads this VM paused as part of a GLOBAL queue pause (ADR-0022), to resume on Play.
     private readonly HashSet<DownloadId> _globallyPaused = [];
 
+    // Two independent pause gates OR'd into the effective pause (ADR-0023): the manual user gate and the
+    // schedule gate (enabled AND outside the window). _appliedPause is the effective state we've reflected
+    // into the scheduler, so a transition is applied exactly once.
+    private readonly ScheduleOptions _schedule;
+    private bool _manualPause;
+    private bool _scheduleAsserts;
+    private bool _appliedPause;
+    private bool _applyingPause;
+
     private string _newUrl = string.Empty;
     private string _importSummary = string.Empty;
     private string? _historyError;
-    private bool _isQueuePaused;
 
     public MainWindowViewModel(
         IDownloadScheduler scheduler,
@@ -67,8 +75,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
         IHistoryStore? historyStore = null,
         IFileLauncher? fileLauncher = null,
         ILifecycleLog? lifecycleLog = null,
-        QueueRecoveryService? recovery = null)
+        QueueRecoveryService? recovery = null,
+        ScheduleOptions? schedule = null)
     {
+        _schedule = schedule ?? new ScheduleOptions();
         _scheduler = scheduler;
         _timeProvider = timeProvider;
         _filePicker = filePicker;
@@ -193,75 +203,133 @@ public sealed partial class MainWindowViewModel : ObservableObject
     /// <summary>Global queue Pause/Play toggle (ADR-0022) — one action for the whole queue.</summary>
     public AsyncRelayCommand ToggleQueuePauseCommand { get; }
 
-    /// <summary>Whether the whole queue is globally paused (ADR-0022). Orthogonal to per-item Postpone.</summary>
-    public bool IsQueuePaused
+    /// <summary>
+    /// Which gate(s) currently assert the pause (ADR-0023): manual, schedule, or both. The effective pause
+    /// is the OR of the two independent gates — no override logic, no sticky state.
+    /// </summary>
+    public QueuePauseReason PauseReason =>
+        (_manualPause ? QueuePauseReason.Manual : QueuePauseReason.None)
+        | (_scheduleAsserts ? QueuePauseReason.Schedule : QueuePauseReason.None);
+
+    /// <summary>Whether the queue is effectively paused (either gate asserts). Orthogonal to per-item Postpone.</summary>
+    public bool IsQueuePaused => PauseReason != QueuePauseReason.None;
+
+    /// <summary>Label for the manual Pause/Play button (reflects only the manual gate the button controls).</summary>
+    public string QueuePauseLabel => _manualPause ? "▶  Play queue" : "⏸  Pause queue";
+
+    /// <summary>Human-readable reason the queue is paused, distinguishing the gates (ADR-0023).</summary>
+    public string PauseReasonText => PauseReason switch
     {
-        get => _isQueuePaused;
-        private set
-        {
-            if (SetProperty(ref _isQueuePaused, value))
-            {
-                OnPropertyChanged(nameof(QueuePauseLabel));
-            }
-        }
+        QueuePauseReason.Manual => "Paused by you",
+        QueuePauseReason.Schedule => "Outside scheduled hours",
+        QueuePauseReason.Manual | QueuePauseReason.Schedule => "Paused by you · outside scheduled hours",
+        _ => string.Empty,
+    };
+
+    /// <summary>Toggle the MANUAL pause gate (the user's Pause/Play button). The schedule gate is independent.</summary>
+    public Task ToggleQueuePauseAsync()
+    {
+        _manualPause = !_manualPause;
+        OnPropertyChanged(nameof(QueuePauseLabel));
+        return ApplyEffectivePauseAsync();
     }
 
-    /// <summary>Label for the global Pause/Play button.</summary>
-    public string QueuePauseLabel => _isQueuePaused ? "▶  Play queue" : "⏸  Pause queue";
+    /// <summary>
+    /// Re-evaluate the schedule gate against the current time (ADR-0023): a predicate, not an event, so a
+    /// skipped/doubled DST clock time is simply read on the next tick. Applies the effective pause if it changed.
+    /// </summary>
+    private void EvaluateSchedule()
+    {
+        var now = TimeOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime);
+        var asserts = ScheduleGate.Asserts(_schedule, now);
+        if (asserts == _scheduleAsserts)
+        {
+            return;
+        }
+
+        _scheduleAsserts = asserts;
+        _ = ApplyEffectivePauseAsync(); // fire-and-forget from the UI tick; guarded against re-entrancy
+    }
 
     /// <summary>
-    /// Global Pause/Play (ADR-0022). Pause halts the whole queue: the scheduler blocks promotion and every
-    /// active download is paused via the existing per-download pause (bytes retained). Play un-blocks
-    /// promotion and resumes the downloads we paused. One action, the whole queue — there is no per-item pause.
+    /// Apply the effective pause = manual OR schedule (ADR-0022/0023). On a transition, pause/resume the
+    /// whole queue via the EXISTING global pause path (block promotion + per-download pause). Applied once
+    /// per transition; raising the pause-state properties so the UI reflects which gate asserts.
     /// </summary>
-    public async Task ToggleQueuePauseAsync()
+    private async Task ApplyEffectivePauseAsync()
     {
-        if (!_isQueuePaused)
+        var effective = _manualPause || _scheduleAsserts;
+        RaisePauseState();
+
+        if (_applyingPause || effective == _appliedPause)
         {
-            _scheduler.PauseQueue(); // block promotion first, then stop the active transfers
-            foreach (var item in Downloads)
+            return;
+        }
+
+        _applyingPause = true;
+        try
+        {
+            if (effective)
             {
-                if (item.Status is DownloadStatus.Running or DownloadStatus.Retrying && _globallyPaused.Add(item.Id))
+                _scheduler.PauseQueue(); // block promotion first, then stop the active transfers
+                foreach (var item in Downloads)
+                {
+                    if (item.Status is DownloadStatus.Running or DownloadStatus.Retrying && _globallyPaused.Add(item.Id))
+                    {
+                        try
+                        {
+                            await _scheduler.PauseAsync(item.Id).ConfigureAwait(true);
+                        }
+                        catch (Exception ex) when (ex is InvalidDownloadTransitionException or KeyNotFoundException)
+                        {
+                            _globallyPaused.Remove(item.Id); // raced to terminal — nothing to pause
+                        }
+                    }
+                }
+
+                LogQueue("paused");
+            }
+            else
+            {
+                foreach (var id in _globallyPaused)
                 {
                     try
                     {
-                        await _scheduler.PauseAsync(item.Id).ConfigureAwait(true);
+                        await _scheduler.ResumeAsync(id).ConfigureAwait(true);
                     }
                     catch (Exception ex) when (ex is InvalidDownloadTransitionException or KeyNotFoundException)
                     {
-                        _globallyPaused.Remove(item.Id); // raced to terminal — nothing to pause
+                        // Raced to terminal between pause and play — fine.
                     }
                 }
+
+                _globallyPaused.Clear();
+                _scheduler.ResumeQueue(); // un-block promotion last
+                LogQueue("resumed");
             }
 
-            IsQueuePaused = true;
-            LogQueue("paused");
+            _appliedPause = effective;
         }
-        else
+        finally
         {
-            foreach (var id in _globallyPaused)
-            {
-                try
-                {
-                    await _scheduler.ResumeAsync(id).ConfigureAwait(true);
-                }
-                catch (Exception ex) when (ex is InvalidDownloadTransitionException or KeyNotFoundException)
-                {
-                    // Raced to terminal between pause and play — fine.
-                }
-            }
-
-            _globallyPaused.Clear();
-            _scheduler.ResumeQueue(); // un-block promotion last
-            IsQueuePaused = false;
-            LogQueue("resumed");
+            _applyingPause = false;
         }
+    }
+
+    private void RaisePauseState()
+    {
+        OnPropertyChanged(nameof(PauseReason));
+        OnPropertyChanged(nameof(IsQueuePaused));
+        OnPropertyChanged(nameof(PauseReasonText));
     }
 
     /// <summary>UI-timer tick: refresh every row's derived state (lock-free reads) and re-bucket any whose
     /// section changed. Runs on the UI thread.</summary>
     public void Tick()
     {
+        // Re-evaluate the time-based schedule gate each tick (predicate model; ADR-0023).
+        EvaluateSchedule();
+
         List<DownloadItemViewModel>? terminal = null;
         foreach (var item in Downloads)
         {

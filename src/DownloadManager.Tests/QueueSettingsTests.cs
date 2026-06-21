@@ -40,13 +40,16 @@ public sealed class QueueSettingsTests : IDisposable
 
         public DownloadDefaults Defaults { get; } = new();
 
+        public ScheduleOptions Schedule { get; } = new();
+
         public CollectingLogger<QueueSettingsTests> Logger { get; } = new();
 
         public QueueSettingsViewModel Panel { get; }
 
         public Fixture(string settingsPath, string userProfile)
         {
-            Panel = new QueueSettingsViewModel(Scheduler, Engine, Retry, Defaults, settingsPath, Logger, userProfile);
+            Panel = new QueueSettingsViewModel(
+                Scheduler, Engine, Retry, Defaults, Schedule, settingsPath, Logger, userProfile);
         }
     }
 
