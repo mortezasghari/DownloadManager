@@ -253,6 +253,19 @@
 
             </WrapPanel>
 
+            <!-- Version + notify-only update check (ADR-0025). Version read from the assembly, never hardcoded. -->
+            <Border BorderBrush="#22808080" BorderThickness="0,1,0,0" Padding="0,10,0,0">
+              <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="10">
+                <TextBlock Grid.Column="0" Classes="field-label" VerticalAlignment="Center"
+                           Text="{Binding AppVersionText}" />
+                <Button Grid.Column="1" Content="Check for updates" Command="{Binding CheckForUpdatesCommand}" />
+                <TextBlock Grid.Column="2" Classes="note" VerticalAlignment="Center" TextWrapping="Wrap"
+                           Text="{Binding UpdateStatus}" />
+                <Button Grid.Column="3" Content="View release" Command="{Binding ViewReleaseCommand}"
+                        IsVisible="{Binding CanViewRelease}" />
+              </Grid>
+            </Border>
+
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,4,0,0">
               <Button Content="Cancel" Command="{Binding CancelCommand}" />
               <Button Content="Save" Classes="accent" Command="{Binding SaveCommand}" />

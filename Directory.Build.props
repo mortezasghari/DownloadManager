@@ -21,6 +21,14 @@
     <AnalysisLevel>latest</AnalysisLevel>
 
     <Deterministic>true</Deterministic>
+
+    <!--
+      Calculated versioning (ADR-0025): CI passes -p:Version=<calculated> at build/publish time, which sets
+      AssemblyVersion / FileVersion / InformationalVersion. Keep InformationalVersion free of the default
+      "+<commit-sha>" suffix so the assembly reports a clean "major.minor.build" the app can display/compare.
+      No version is hardcoded here — an uninjected local build is the SDK default (1.0.0); CI injects the real one.
+    -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
 </Project>

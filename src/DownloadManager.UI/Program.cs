@@ -29,6 +29,15 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        // Calculated versioning (ADR-0025): `--next-version <current-tag> <label>` prints the next version
+        // for CI to inject. Pure arithmetic on the args (the running binary's own version is irrelevant), so
+        // there is no chicken-and-egg with version injection. Reuses the tested VersionBump logic.
+        if (args is ["--next-version", var current, var label, ..])
+        {
+            Console.WriteLine($"NEXT_VERSION={Versioning.VersionBump.Next(current, label)}");
+            return 0;
+        }
+
         // Headless CI self-test: exercises the native preallocation path without a display (every RID).
         if (args.Contains("--smoke"))
         {
@@ -70,6 +79,12 @@ internal static class Program
         // DownloadManager/history.json (same OS-config dir as settings.json), atomically written. The
         // launcher shells out per-platform for the open / reveal actions.
         services.AddSingleton<IFileLauncher, ProcessFileLauncher>();
+
+        // Notify-only update check (ADR-0025): compares the running version to the latest GitHub release.
+        // Reuses the shared HttpClient; never downloads/installs anything (the secured updater is parked).
+        services.AddSingleton<IUpdateChecker>(sp => new GithubUpdateChecker(
+            sp.GetRequiredService<SharedHttpClient>().Client,
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<GithubUpdateChecker>()));
         services.AddSingleton<IHistoryStore>(sp => new JsonHistoryStore(
             Path.Combine(SettingsStore.DefaultDirectory(), "history.json"),
             sp.GetRequiredService<ILoggerFactory>().CreateLogger<JsonHistoryStore>()));
@@ -90,7 +105,9 @@ internal static class Program
             sp.GetRequiredService<DownloadDefaults>(),
             sp.GetRequiredService<ScheduleOptions>(),
             SettingsStore.DefaultPath(),
-            sp.GetRequiredService<ILoggerFactory>().CreateLogger("QueueSettings")));
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger("QueueSettings"),
+            updateChecker: sp.GetRequiredService<IUpdateChecker>(),
+            launcher: sp.GetRequiredService<IFileLauncher>()));
         services.AddTransient<MainWindowViewModel>();
 
         // Engine composition root. Tunables come from the user-editable settings.json, loaded once via

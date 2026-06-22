@@ -18,6 +18,9 @@ public interface IFileLauncher
     LaunchResult OpenFile(string savedPath);
 
     LaunchResult RevealInFolder(string savedPath);
+
+    /// <summary>Open an http/https URL in the default browser (the notify-only "view release" link, ADR-0025).</summary>
+    LaunchResult OpenUrl(string url);
 }
 
 /// <summary>The three desktop platforms the launcher branches on. Explicit so command construction is
@@ -55,6 +58,14 @@ public static class LaunchCommands
         LaunchOs.Windows => new LaunchCommand(path, [], UseShellExecute: true),
         LaunchOs.MacOS => new LaunchCommand("open", [path], UseShellExecute: false),
         _ => new LaunchCommand("xdg-open", [path], UseShellExecute: false),
+    };
+
+    /// <summary>Open a URL: Windows shell-executes it; macOS <c>open</c>; Linux <c>xdg-open</c>.</summary>
+    public static LaunchCommand OpenUrl(LaunchOs os, string url) => os switch
+    {
+        LaunchOs.Windows => new LaunchCommand(url, [], UseShellExecute: true),
+        LaunchOs.MacOS => new LaunchCommand("open", [url], UseShellExecute: false),
+        _ => new LaunchCommand("xdg-open", [url], UseShellExecute: false),
     };
 
     public static LaunchCommand RevealInFolder(LaunchOs os, string path) => os switch
