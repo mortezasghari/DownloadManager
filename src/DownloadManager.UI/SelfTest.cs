@@ -6,6 +6,7 @@ using DownloadManager.Core.Lifecycle;
 using DownloadManager.Persistence.History;
 using DownloadManager.Persistence.Io;
 using DownloadManager.Persistence.Lifecycle;
+using DownloadManager.UI.Versioning;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -28,6 +29,12 @@ internal static class SelfTest
 {
     public static int Run()
     {
+        var versionResult = RunVersionSelfTest();
+        if (versionResult != 0)
+        {
+            return versionResult;
+        }
+
         var configResult = RunConfigSelfTest();
         if (configResult != 0)
         {
@@ -206,6 +213,19 @@ internal static class SelfTest
             {
             }
         }
+    }
+
+    /// <summary>
+    /// Reports the version baked into the published AOT binary (ADR-0025): proves the CI-calculated version
+    /// was injected into the assembly and is readable at runtime via the BCL. Prints <c>VERSION OK x.y.z</c>;
+    /// CI asserts the reported version is not the <c>1.0.0</c> default (i.e. injection actually flowed in).
+    /// </summary>
+    private static int RunVersionSelfTest()
+    {
+        var rid = RuntimeInformation.RuntimeIdentifier;
+        var version = AppVersion.CurrentString();
+        Console.WriteLine($"VERSION OK [{rid}]: {version}");
+        return 0;
     }
 
     /// <summary>

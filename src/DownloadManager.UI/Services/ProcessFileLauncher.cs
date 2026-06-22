@@ -15,6 +15,40 @@ public sealed class ProcessFileLauncher : IFileLauncher
     public LaunchResult RevealInFolder(string savedPath) =>
         Run(savedPath, LaunchCommands.RevealInFolder(LaunchCommands.Current(), savedPath));
 
+    public LaunchResult OpenUrl(string url)
+    {
+        // Notify-only "view release" link: only ever an http/https URL we built from release metadata.
+        // Refuse any other scheme so this can never shell-execute a file:// path or a custom-scheme handler.
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return LaunchResult.Failure("Not a valid web link.");
+        }
+
+        try
+        {
+            var command = LaunchCommands.OpenUrl(LaunchCommands.Current(), uri.AbsoluteUri);
+            var info = new ProcessStartInfo
+            {
+                FileName = command.FileName,
+                UseShellExecute = command.UseShellExecute,
+            };
+            foreach (var argument in command.Arguments)
+            {
+                info.ArgumentList.Add(argument);
+            }
+
+            using var process = Process.Start(info);
+            return process is null
+                ? LaunchResult.Failure($"Could not start '{command.FileName}'.")
+                : LaunchResult.Success;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            return LaunchResult.Failure($"Could not open the link: {ex.Message}");
+        }
+    }
+
     private static LaunchResult Run(string savedPath, LaunchCommand command)
     {
         if (string.IsNullOrWhiteSpace(savedPath))

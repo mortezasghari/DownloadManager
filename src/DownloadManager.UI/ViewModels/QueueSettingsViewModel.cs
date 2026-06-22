@@ -1,5 +1,7 @@
 using DownloadManager.Core.Configuration;
 using DownloadManager.Core.Scheduler;
+using DownloadManager.UI.Services;
+using DownloadManager.UI.Versioning;
 using Microsoft.Extensions.Logging;
 
 namespace DownloadManager.UI.ViewModels;
@@ -31,7 +33,11 @@ public sealed class QueueSettingsViewModel : ObservableObject
     private readonly string _settingsPath;
     private readonly ILogger _logger;
     private readonly string? _userProfile;
+    private readonly IUpdateChecker? _updateChecker;
+    private readonly IFileLauncher? _launcher;
 
+    private string _updateStatus = string.Empty;
+    private string? _releaseUrl;
     private bool _isExpanded;
     private int _maxConcurrentDownloads;
     private int _segmentsPerDownload;
@@ -52,7 +58,9 @@ public sealed class QueueSettingsViewModel : ObservableObject
         ScheduleOptions schedule,
         string settingsPath,
         ILogger logger,
-        string? userProfile = null)
+        string? userProfile = null,
+        IUpdateChecker? updateChecker = null,
+        IFileLauncher? launcher = null)
     {
         _scheduler = scheduler;
         _engineOptions = engineOptions;
@@ -62,12 +70,71 @@ public sealed class QueueSettingsViewModel : ObservableObject
         _settingsPath = settingsPath;
         _logger = logger;
         _userProfile = userProfile;
+        _updateChecker = updateChecker;
+        _launcher = launcher;
 
         SaveCommand = new AsyncRelayCommand(() => { Save(); return Task.CompletedTask; });
         CancelCommand = new AsyncRelayCommand(() => { Cancel(); return Task.CompletedTask; });
         ToggleCommand = new AsyncRelayCommand(() => { Toggle(); return Task.CompletedTask; });
+        CheckForUpdatesCommand = new AsyncRelayCommand(CheckForUpdatesAsync);
+        ViewReleaseCommand = new AsyncRelayCommand(() => { ViewRelease(); return Task.CompletedTask; });
 
         LoadFromLive();
+    }
+
+    /// <summary>The app's own version, read from the assembly (ADR-0025) — never a hardcoded string.</summary>
+    public string AppVersionText => $"Version {AppVersion.CurrentString()}";
+
+    /// <summary>Result of the last update check: "Up to date", "Update available …", or empty.</summary>
+    public string UpdateStatus
+    {
+        get => _updateStatus;
+        private set => SetProperty(ref _updateStatus, value);
+    }
+
+    /// <summary>Whether an update was found and a release page can be opened.</summary>
+    public bool CanViewRelease => !string.IsNullOrEmpty(_releaseUrl);
+
+    public AsyncRelayCommand CheckForUpdatesCommand { get; }
+
+    public AsyncRelayCommand ViewReleaseCommand { get; }
+
+    /// <summary>
+    /// Manual, notify-only update check (ADR-0025): compares the running version to the latest GitHub
+    /// release and reports the result. Never downloads/installs; any failure is a silent no-op surfaced as
+    /// "couldn't check" — not a crash. A button (not a startup network call) keeps it unobtrusive.
+    /// </summary>
+    private async Task CheckForUpdatesAsync()
+    {
+        _releaseUrl = null;
+        OnPropertyChanged(nameof(CanViewRelease));
+
+        if (_updateChecker is null)
+        {
+            return;
+        }
+
+        UpdateStatus = "Checking…";
+        var info = await _updateChecker.CheckAsync().ConfigureAwait(true);
+        if (info is { } update)
+        {
+            _releaseUrl = update.ReleaseUrl;
+            UpdateStatus = $"Update available: you're on {update.Current}, latest is {update.Latest}.";
+        }
+        else
+        {
+            UpdateStatus = $"You're on the latest version ({AppVersion.CurrentString()}).";
+        }
+
+        OnPropertyChanged(nameof(CanViewRelease));
+    }
+
+    private void ViewRelease()
+    {
+        if (!string.IsNullOrEmpty(_releaseUrl))
+        {
+            _launcher?.OpenUrl(_releaseUrl);
+        }
     }
 
     /// <summary>Whether the ribbon is expanded for editing.</summary>

@@ -174,6 +174,8 @@ internal sealed class FakeFileLauncher : IFileLauncher
 
     public List<string> RevealedPaths { get; } = [];
 
+    public List<string> OpenedUrls { get; } = [];
+
     public LaunchResult OpenFile(string savedPath)
     {
         OpenedFiles.Add(savedPath);
@@ -183,6 +185,12 @@ internal sealed class FakeFileLauncher : IFileLauncher
     public LaunchResult RevealInFolder(string savedPath)
     {
         RevealedPaths.Add(savedPath);
+        return Result;
+    }
+
+    public LaunchResult OpenUrl(string url)
+    {
+        OpenedUrls.Add(url);
         return Result;
     }
 }
